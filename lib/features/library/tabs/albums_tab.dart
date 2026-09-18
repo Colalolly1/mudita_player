@@ -10,6 +10,8 @@ import '../../../shared/providers/library_providers.dart';
 import '../../../shared/widgets/album_tile.dart';
 import '../album_detail_screen.dart';
 
+/// A wall of covers, edge to edge. The cover is the label; the name and
+/// artist are one tap away. Long-press for play, shuffle, queue.
 class AlbumsTab extends ConsumerStatefulWidget {
   const AlbumsTab({super.key});
 
@@ -18,23 +20,12 @@ class AlbumsTab extends ConsumerStatefulWidget {
 }
 
 class _AlbumsTabState extends ConsumerState<AlbumsTab> {
-  GridDensity get _density {
+  /// The density setting still applies: roomy is three across, compact four.
+  int get _columns {
     final s = ref
         .read(sharedPreferencesProvider)
         .getString(PrefsKeys.albumsViewDensity);
-    return GridDensity.values.firstWhere(
-      (d) => d.name == s,
-      orElse: () => GridDensity.roomy,
-    );
-  }
-
-  Future<void> _toggleDensity() async {
-    final prefs = ref.read(sharedPreferencesProvider);
-    final next = _density == GridDensity.roomy
-        ? GridDensity.compact
-        : GridDensity.roomy;
-    await prefs.setString(PrefsKeys.albumsViewDensity, next.name);
-    setState(() {});
+    return s == GridDensity.compact.name ? 4 : 3;
   }
 
   Future<void> _quickActions(BuildContext context, AlbumKey key) async {
@@ -52,12 +43,12 @@ class _AlbumsTabState extends ConsumerState<AlbumsTab> {
             ListTile(
               title: Text(key.album,
                   maxLines: 1, overflow: TextOverflow.ellipsis),
-              subtitle: Text('${tracks.length} songs'),
+              subtitle: Text('${key.albumArtist} · ${tracks.length} songs',
+                  maxLines: 1, overflow: TextOverflow.ellipsis),
               dense: true,
             ),
             const Divider(height: 1),
             ListTile(
-              leading: const Icon(Icons.play_arrow),
               title: const Text('Play'),
               onTap: () {
                 Navigator.pop(ctx);
@@ -65,7 +56,6 @@ class _AlbumsTabState extends ConsumerState<AlbumsTab> {
               },
             ),
             ListTile(
-              leading: const Icon(Icons.shuffle),
               title: const Text('Shuffle'),
               onTap: () {
                 Navigator.pop(ctx);
@@ -73,7 +63,6 @@ class _AlbumsTabState extends ConsumerState<AlbumsTab> {
               },
             ),
             ListTile(
-              leading: const Icon(Icons.queue_play_next),
               title: const Text('Play next'),
               onTap: () async {
                 Navigator.pop(ctx);
@@ -83,7 +72,6 @@ class _AlbumsTabState extends ConsumerState<AlbumsTab> {
               },
             ),
             ListTile(
-              leading: const Icon(Icons.add_to_queue),
               title: const Text('Add to queue'),
               onTap: () async {
                 Navigator.pop(ctx);
@@ -101,71 +89,52 @@ class _AlbumsTabState extends ConsumerState<AlbumsTab> {
   @override
   Widget build(BuildContext context) {
     final albums = ref.watch(albumsProvider);
-    final compact = _density == GridDensity.compact;
 
-    return Stack(
-      children: [
-        RefreshIndicator(
-          onRefresh: () async {
-            await ref.read(libraryRepositoryProvider).rescan();
-            ref.invalidate(albumsProvider);
-            ref.invalidate(allTracksProvider);
-          },
-          child: albums.when(
-            loading: () => const Center(child: CircularProgressIndicator()),
-            error: (e, _) =>
-                ListView(children: [Center(child: Text('Error: $e'))]),
-            data: (list) {
-              if (list.isEmpty) {
-                return ListView(children: const [
-                  SizedBox(height: 100),
-                  Center(child: Text('No albums')),
-                ]);
-              }
-              return GridView.builder(
-                padding: const EdgeInsets.fromLTRB(12, 12, 12, 60),
-                gridDelegate: SliverGridDelegateWithMaxCrossAxisExtent(
-                  maxCrossAxisExtent: compact ? 110 : 180,
-                  mainAxisSpacing: compact ? 8 : 12,
-                  crossAxisSpacing: compact ? 8 : 12,
-                  childAspectRatio: compact ? 0.95 : 0.78,
-                ),
-                itemCount: list.length,
-                itemBuilder: (ctx, i) {
-                  final album = list[i];
-                  return GestureDetector(
-                    onLongPress: () => _quickActions(context, album.key),
-                    child: AlbumTile(
-                      album: album,
-                      showLabels: !compact,
-                      onTap: () => Navigator.of(context).push(
-                        MaterialPageRoute(
-                          builder: (_) =>
-                              AlbumDetailScreen(albumKey: album.key),
-                        ),
-                      ),
+    return RefreshIndicator(
+      onRefresh: () async {
+        await ref.read(libraryRepositoryProvider).rescan();
+        ref.invalidate(albumsProvider);
+        ref.invalidate(allTracksProvider);
+      },
+      child: albums.when(
+        loading: () => const Center(child: CircularProgressIndicator()),
+        error: (e, _) =>
+            ListView(children: [Center(child: Text('Error: $e'))]),
+        data: (list) {
+          if (list.isEmpty) {
+            return ListView(children: const [
+              SizedBox(height: 100),
+              Center(child: Text('No albums')),
+            ]);
+          }
+          return GridView.builder(
+            padding: const EdgeInsets.fromLTRB(2, 2, 2, 8),
+            gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
+              crossAxisCount: _columns,
+              mainAxisSpacing: 2,
+              crossAxisSpacing: 2,
+            ),
+            itemCount: list.length,
+            itemBuilder: (ctx, i) {
+              final album = list[i];
+              return GestureDetector(
+                onLongPress: () => _quickActions(context, album.key),
+                child: AlbumTile(
+                  album: album,
+                  showLabels: false,
+                  radius: 0,
+                  padding: EdgeInsets.zero,
+                  onTap: () => Navigator.of(context).push(
+                    MaterialPageRoute(
+                      builder: (_) => AlbumDetailScreen(albumKey: album.key),
                     ),
-                  );
-                },
+                  ),
+                ),
               );
             },
-          ),
-        ),
-        Positioned(
-          right: 8,
-          bottom: 8,
-          child: Material(
-            elevation: 2,
-            color: Theme.of(context).colorScheme.surfaceContainerHigh,
-            shape: const CircleBorder(),
-            child: IconButton(
-              tooltip: compact ? 'Switch to roomy' : 'Switch to compact',
-              icon: Icon(compact ? Icons.grid_view : Icons.apps),
-              onPressed: _toggleDensity,
-            ),
-          ),
-        ),
-      ],
+          );
+        },
+      ),
     );
   }
 }

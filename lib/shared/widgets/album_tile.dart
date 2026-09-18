@@ -7,21 +7,25 @@ class AlbumTile extends StatelessWidget {
   final AlbumSummary album;
   final VoidCallback? onTap;
   final bool showLabels;
+  final double radius;
+  final EdgeInsets padding;
 
   const AlbumTile({
     super.key,
     required this.album,
     this.onTap,
     this.showLabels = true,
+    this.radius = 4,
+    this.padding = const EdgeInsets.all(4),
   });
 
   @override
   Widget build(BuildContext context) {
     return InkWell(
       onTap: onTap,
-      borderRadius: BorderRadius.circular(6),
+      borderRadius: BorderRadius.circular(radius),
       child: Padding(
-        padding: const EdgeInsets.all(4),
+        padding: padding,
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
@@ -30,7 +34,7 @@ class AlbumTile extends StatelessWidget {
               child: CoverArt(
                 artUri: album.artUri,
                 size: double.infinity,
-                radius: 4,
+                radius: radius,
               ),
             ),
             if (showLabels) ...[

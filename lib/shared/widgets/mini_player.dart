@@ -5,6 +5,7 @@ import 'package:go_router/go_router.dart';
 import '../../playback/playback_controller.dart';
 import 'cover_art.dart';
 
+/// Cover, title, artist, one button. Tap or swipe up for everything else.
 class MiniPlayer extends ConsumerWidget {
   const MiniPlayer({super.key});
 
@@ -21,7 +22,7 @@ class MiniPlayer extends ConsumerWidget {
             .clamp(0.0, 1.0);
 
     return Material(
-      color: scheme.surfaceContainer,
+      color: scheme.surface,
       child: GestureDetector(
         onVerticalDragEnd: (d) {
           final v = d.primaryVelocity ?? 0;
@@ -34,20 +35,21 @@ class MiniPlayer extends ConsumerWidget {
             children: [
               LinearProgressIndicator(
                 value: progress,
-                minHeight: 1.5,
+                minHeight: 1,
                 backgroundColor: scheme.outlineVariant,
-                valueColor: AlwaysStoppedAnimation(scheme.primary),
+                valueColor: AlwaysStoppedAnimation(scheme.onSurface),
               ),
               SizedBox(
-                height: 60,
+                height: 64,
                 child: Row(
                   children: [
-                    const SizedBox(width: 8),
+                    const SizedBox(width: 16),
                     CoverArt(
                       artUri: t.artUri.isEmpty ? null : t.artUri,
                       size: 44,
+                      radius: 0,
                     ),
-                    const SizedBox(width: 12),
+                    const SizedBox(width: 14),
                     Expanded(
                       child: Column(
                         mainAxisAlignment: MainAxisAlignment.center,
@@ -57,7 +59,10 @@ class MiniPlayer extends ConsumerWidget {
                             t.title,
                             maxLines: 1,
                             overflow: TextOverflow.ellipsis,
-                            style: Theme.of(context).textTheme.titleSmall,
+                            style: Theme.of(context)
+                                .textTheme
+                                .bodyLarge
+                                ?.copyWith(fontWeight: FontWeight.w500),
                           ),
                           const SizedBox(height: 2),
                           Text(
@@ -70,41 +75,13 @@ class MiniPlayer extends ConsumerWidget {
                       ),
                     ),
                     IconButton(
-                      icon: const Icon(Icons.skip_previous),
-                      onPressed: ref
-                              .read(playbackControllerProvider.notifier)
-                              .albumOnly
-                          ? null
-                          : () => ref
-                              .read(playbackControllerProvider.notifier)
-                              .previous(),
-                    ),
-                    IconButton(
-                      icon: Icon(state.playing
-                          ? Icons.pause_outlined
-                          : Icons.play_arrow),
+                      iconSize: 30,
+                      icon: Icon(state.playing ? Icons.pause : Icons.play_arrow),
                       onPressed: () => ref
                           .read(playbackControllerProvider.notifier)
                           .toggle(),
                     ),
-                    IconButton(
-                      icon: const Icon(Icons.skip_next),
-                      onPressed: ref
-                              .read(playbackControllerProvider.notifier)
-                              .albumOnly
-                          ? null
-                          : () => ref
-                              .read(playbackControllerProvider.notifier)
-                              .next(),
-                    ),
-                    IconButton(
-                      icon: const Icon(Icons.close),
-                      tooltip: 'Stop and clear queue',
-                      onPressed: () => ref
-                          .read(playbackControllerProvider.notifier)
-                          .stopAndClear(),
-                    ),
-                    const SizedBox(width: 4),
+                    const SizedBox(width: 8),
                   ],
                 ),
               ),
