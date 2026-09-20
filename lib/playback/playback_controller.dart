@@ -416,6 +416,15 @@ class PlaybackController extends StateNotifier<PlaybackState> {
     await _player.seekToNext();
   }
 
+  /// Jump straight to a song in the queue (tapped from the queue screen).
+  Future<void> skipTo(int index) async {
+    if (albumOnly) return;
+    if (index < 0 || index >= state.queue.length) return;
+    _maybeRecordSkip();
+    await _player.seek(Duration.zero, index: index);
+    if (!_player.playing) await _player.play();
+  }
+
   Future<void> stopAndClear() async {
     _pendingQueueIds.clear();
     await _player.stop();
