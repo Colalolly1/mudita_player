@@ -83,6 +83,7 @@ class PlaybackController extends StateNotifier<PlaybackState> {
   StreamSubscription? _stateSub;
   StreamSubscription? _idxSub;
   StreamSubscription? _becomingNoisySub;
+  StreamSubscription? _devicesSub;
   StreamSubscription? _interruptionSub;
   Timer? _resumeSaveTimer;
   bool _restored = false;
@@ -125,11 +126,21 @@ class PlaybackController extends StateNotifier<PlaybackState> {
     try {
       _audioSession = await AudioSession.instance;
       await _audioSession!.configure(const AudioSessionConfiguration.music());
-      // Auto-pause when headphones unplug
+      // Auto-pause when headphones unplug. ACTION_AUDIO_BECOMING_NOISY is the
+      // documented signal, but plenty of ROMs only broadcast it for the wired
+      // jack, which is why Bluetooth earbuds could disconnect and leave the
+      // music playing out of the phone's speaker.
       _becomingNoisySub = _audioSession!.becomingNoisyEventStream.listen((_) {
-        if (_prefs.getBool(PrefsKeys.autoPauseHeadphone) ?? true) {
-          _player.pause();
-        }
+        _pauseForLostOutput();
+      });
+
+      // The reliable signal: the OS telling us an output device went away.
+      // Covers Bluetooth (A2DP and headset), the wired jack and USB audio.
+      _devicesSub = _audioSession!.devicesChangedEventStream.listen((event) {
+        final lostListening = event.devicesRemoved.any(
+          (d) => d.isOutput && _personalOutput.contains(d.type),
+        );
+        if (lostListening) _pauseForLostOutput();
       });
       // Pause for phone calls and resume after
       _interruptionSub =
@@ -150,6 +161,24 @@ class PlaybackController extends StateNotifier<PlaybackState> {
     } catch (_) {
       // Audio session init can fail on some emulators; ignore.
     }
+  }
+
+  /// Output types that mean "only I can hear this". Losing one of them should
+  /// stop the music rather than move it to the phone's speaker.
+  static const _personalOutput = {
+    AudioDeviceType.bluetoothA2dp,
+    AudioDeviceType.bluetoothSco,
+    AudioDeviceType.wiredHeadset,
+    AudioDeviceType.wiredHeadphones,
+    AudioDeviceType.usbAudio,
+  };
+
+  /// Pause because the thing you were listening through has gone. Both signals
+  /// can arrive for one disconnect, so this is safe to call twice.
+  void _pauseForLostOutput() {
+    if (!(_prefs.getBool(PrefsKeys.autoPauseHeadphone) ?? true)) return;
+    if (!_player.playing) return;
+    _player.pause();
   }
 
   AudioPlayer get player => _player;
@@ -742,6 +771,7 @@ class PlaybackController extends StateNotifier<PlaybackState> {
     await _stateSub?.cancel();
     await _idxSub?.cancel();
     await _becomingNoisySub?.cancel();
+    await _devicesSub?.cancel();
     await _interruptionSub?.cancel();
     await _player.dispose();
     super.dispose();
