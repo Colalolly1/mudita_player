@@ -424,22 +424,46 @@ class _Controls extends ConsumerWidget {
         Row(
           mainAxisAlignment: MainAxisAlignment.center,
           children: [
+            // Shuffle and repeat sit either side of the transport, filled in
+            // when on and muted when off, rather than hidden under More.
+            IconButton(
+              iconSize: 26,
+              icon: const Icon(Icons.shuffle),
+              color: state.shuffle == ShuffleMode.on
+                  ? Theme.of(context).colorScheme.onSurface
+                  : muted,
+              onPressed: lockedAlbum ? null : ctrl.toggleShuffle,
+              tooltip: 'Shuffle',
+            ),
+            const SizedBox(width: 10),
             IconButton(
               iconSize: 36,
               icon: const Icon(Icons.skip_previous),
               onPressed: lockedAlbum ? null : ctrl.previous,
             ),
-            const SizedBox(width: 28),
+            const SizedBox(width: 20),
             IconButton(
               iconSize: 56,
               icon: Icon(state.playing ? Icons.pause : Icons.play_arrow),
               onPressed: ctrl.toggle,
             ),
-            const SizedBox(width: 28),
+            const SizedBox(width: 20),
             IconButton(
               iconSize: 36,
               icon: const Icon(Icons.skip_next),
               onPressed: lockedAlbum ? null : ctrl.next,
+            ),
+            const SizedBox(width: 10),
+            IconButton(
+              iconSize: 26,
+              icon: Icon(state.repeat == RepeatMode.one
+                  ? Icons.repeat_one
+                  : Icons.repeat),
+              color: state.repeat == RepeatMode.off
+                  ? muted
+                  : Theme.of(context).colorScheme.onSurface,
+              onPressed: ctrl.cycleRepeat,
+              tooltip: 'Repeat',
             ),
           ],
         ),
