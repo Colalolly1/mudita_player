@@ -24,6 +24,7 @@ class MediaSessionBridge {
   String? _lastArt;
   int _lastDurationMs = 0;
   int _lastStatePushMs = 0;
+  int _lastPushedPosMs = 0;
   bool _lastPlaying = false;
 
   MediaSessionBridge(this._ref);
@@ -88,12 +89,20 @@ class MediaSessionBridge {
       } catch (_) {}
     }
 
-    // Throttle playback-state pushes to ~1/sec normally, but always push
-    // immediately on a play/pause change so the car reacts instantly.
+    // Android extrapolates the position itself from the last state and the
+    // speed, so the session only needs a new state when something actually
+    // changed: play/pause, a new track, or a seek. Pushing every second
+    // re-posted the media notification every second, and every notification
+    // listener on the phone (Bigme's standby app among them) woke for it.
     final nowMs = DateTime.now().millisecondsSinceEpoch;
     final playStateChanged = next.playing != _lastPlaying;
-    if (playStateChanged || nowMs - _lastStatePushMs >= 1000) {
+    final posMs = next.position.inMilliseconds;
+    final expectedMs = _lastPushedPosMs +
+        (_lastPlaying ? nowMs - _lastStatePushMs : 0);
+    final seeked = (posMs - expectedMs).abs() > 1500;
+    if (playStateChanged || metaChanged || seeked || _lastStatePushMs == 0) {
       _lastStatePushMs = nowMs;
+      _lastPushedPosMs = posMs;
       _lastPlaying = next.playing;
       try {
         await _control.invokeMethod('setPlaybackState', {
