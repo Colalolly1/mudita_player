@@ -184,7 +184,15 @@ class PlaybackController extends StateNotifier<PlaybackState> {
   AudioPlayer get player => _player;
 
   void _wire() {
-    _posSub = _player.positionStream.listen((p) {
+    // Once a second, not five times: every tick rebuilds the now-playing
+    // screen, and on E-Ink each rebuild is a screen refresh.
+    _posSub = _player
+        .createPositionStream(
+          steps: 1,
+          minPeriod: const Duration(seconds: 1),
+          maxPeriod: const Duration(seconds: 1),
+        )
+        .listen((p) {
       state = state.copyWith(position: p);
     });
     _durSub = _player.durationStream.listen((d) {
@@ -375,10 +383,14 @@ class PlaybackController extends StateNotifier<PlaybackState> {
     // Gapless playback: when ON (default), each upcoming source is prepared
     // eagerly so the transition between tracks is sample-accurate. When OFF,
     // sources are loaded lazily and a small silence sneaks in between songs.
-    final gapless = _prefs.getBool(PrefsKeys.gaplessPlayback) ?? true;
+    // Always lazy. Eager preparation opened and parsed every file in the
+    // queue up front — four hundred of them when playing from all songs —
+    // and kept them all prepared, which is where the battery went while
+    // listening. ExoPlayer still prepares the next item ahead of time, so
+    // the gapless join is unaffected.
     final source = ConcatenatingAudioSource(
       children: sources,
-      useLazyPreparation: !gapless,
+      useLazyPreparation: true,
     );
     // We always play linearly; shuffle is reflected in the ORDER of the queue
     // list itself, never via just_audio's internal shuffle. This makes
@@ -720,16 +732,21 @@ class PlaybackController extends StateNotifier<PlaybackState> {
 
   void _onTrackCompleted() {}
 
+  int? _savedQueueSig;
+
   Future<void> _saveResumeState() async {
-    if (state.current != null) {
-      await _prefs.setInt(PrefsKeys.lastTrackId, state.current!.id);
-      // Read live position from player (state.position can be slightly stale).
-      final pos = _player.position.inMilliseconds;
-      await _prefs.setInt(PrefsKeys.lastPositionMs, pos);
-      await _prefs.setStringList(
-        PrefsKeys.lastQueueIds,
-        state.queue.map((t) => t.id.toString()).toList(),
-      );
+    final cur = state.current;
+    if (cur == null) return;
+    await _prefs.setInt(PrefsKeys.lastTrackId, cur.id);
+    // Read live position from player (state.position can be slightly stale).
+    await _prefs.setInt(PrefsKeys.lastPositionMs, _player.position.inMilliseconds);
+    // The queue list is only rewritten when it actually changes. Writing
+    // hundreds of ids to disk every five seconds was steady work for nothing.
+    final ids = state.queue.map((t) => t.id.toString()).toList();
+    final sig = Object.hashAll(ids);
+    if (sig != _savedQueueSig) {
+      await _prefs.setStringList(PrefsKeys.lastQueueIds, ids);
+      _savedQueueSig = sig;
     }
   }
 
@@ -788,5 +805,9 @@ final playbackControllerProvider =
 
 final positionStreamProvider = StreamProvider<Duration>((ref) {
   final p = ref.watch(playbackControllerProvider.notifier);
-  return p.player.positionStream;
+  return p.player.createPositionStream(
+    steps: 1,
+    minPeriod: const Duration(seconds: 1),
+    maxPeriod: const Duration(seconds: 1),
+  );
 });
