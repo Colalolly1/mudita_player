@@ -49,7 +49,13 @@
         <service
             android:name=".MediaPlaybackService"
             android:exported="false"
-            android:foregroundServiceType="mediaPlayback" />
+            android:foregroundServiceType="mediaPlayback">
+            <!-- MediaButtonReceiver forwards earbud presses here; without
+                 this filter it throws when nothing is playing. -->
+            <intent-filter>
+                <action android:name="android.intent.action.MEDIA_BUTTON" />
+            </intent-filter>
+        </service>
 
         <!-- Receives media button presses (from headphones, car, etc.) -->
         <receiver

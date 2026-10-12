@@ -11,20 +11,23 @@ class QueueScreen extends ConsumerWidget {
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
-    final state = ref.watch(playbackControllerProvider);
+    // The queue and where we are in it; play/pause and the rest don't matter
+    // here.
+    final (:queue, :index) = ref.watch(playbackControllerProvider
+        .select((s) => (queue: s.queue, index: s.index)));
     final ctrl = ref.read(playbackControllerProvider.notifier);
     final scheme = Theme.of(context).colorScheme;
 
-    if (state.queue.isEmpty) {
+    if (queue.isEmpty) {
       return Scaffold(
         appBar: AppBar(title: const Text('Queue')),
         body: const Center(child: Text('Queue is empty')),
       );
     }
 
-    final current = state.queue[state.index.clamp(0, state.queue.length - 1)];
-    final base = state.index + 1;
-    final upcoming = base < state.queue.length ? state.queue.sublist(base) : const [];
+    final current = queue[index.clamp(0, queue.length - 1)];
+    final base = index + 1;
+    final upcoming = base < queue.length ? queue.sublist(base) : const [];
 
     return Scaffold(
       appBar: AppBar(title: const Text('Queue')),

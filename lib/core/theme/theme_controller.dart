@@ -66,12 +66,20 @@ class ThemeController extends StateNotifier<ThemeSettings> {
     final amoled = prefs.getBool(PrefsKeys.useAmoled) ?? false;
     final accentInt = prefs.getInt(PrefsKeys.accentColor) ??
         AccentPalette.defaultAccent.toARGB32();
+    // New installs start in e-ink mode. An empty prefs file means this is the
+    // first launch; existing installs keep the mode they had. The choice is
+    // saved straight away so the next launch reads it back.
+    var eink = prefs.getBool(PrefsKeys.einkMode);
+    if (eink == null) {
+      eink = prefs.getKeys().isEmpty;
+      prefs.setBool(PrefsKeys.einkMode, eink);
+    }
     return ThemeSettings(
       mode: AppThemeMode.values[
           modeIdx.clamp(0, AppThemeMode.values.length - 1)],
       useAmoled: amoled,
       accent: Color(accentInt),
-      einkMode: prefs.getBool(PrefsKeys.einkMode) ?? false,
+      einkMode: eink,
       largeUi: prefs.getBool(PrefsKeys.largeUi) ?? false,
       albumDerivedAccent: prefs.getBool(PrefsKeys.albumDerivedAccent) ?? false,
       hideCoverArt: prefs.getBool(PrefsKeys.hideCoverArt) ?? false,

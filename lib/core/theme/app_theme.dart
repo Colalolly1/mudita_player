@@ -20,7 +20,9 @@ class AppTheme {
       onSurface: const Color(0xFF111111),
       onSurfaceVariant: const Color(0xFF555555),
       outline: const Color(0xFFD0D0D0),
-      outlineVariant: const Color(0xFFE5E5E5),
+      // Dividers, the mini-player line and the unplayed seek track. #E5E5E5
+      // was invisible on e-ink.
+      outlineVariant: const Color(0xFF777777),
     );
     return _build(scheme, accent,
         isDark: false, amoled: false, largeUi: largeUi, fontFamily: fontFamily);
@@ -280,7 +282,7 @@ class _NoAnimPageTransitionsBuilder extends PageTransitionsBuilder {
 
 class AccentPalette {
   static const List<Color> presets = [
-    Color(0xFFE5E5E5),
+    Color(0xFF333333),
     Color(0xFFFFFFFF),
     Color(0xFFFF6B35),
     Color(0xFFFFB627),
@@ -292,5 +294,6 @@ class AccentPalette {
     Color(0xFFD64545),
   ];
 
-  static const Color defaultAccent = Color(0xFFE5E5E5);
+  // Dark enough that the speed and pitch sliders show on a white screen.
+  static const Color defaultAccent = Color(0xFF333333);
 }

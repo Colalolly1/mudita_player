@@ -8,11 +8,13 @@ import '../../core/theme/theme_controller.dart';
 import '../../playback/playback_controller.dart';
 
 final sleepTimerProvider =
-    StateNotifierProvider<SleepTimerController, Duration?>((ref) {
+    StateNotifierProvider<SleepTimerController, DateTime?>((ref) {
   return SleepTimerController(ref);
 });
 
-class SleepTimerController extends StateNotifier<Duration?> {
+/// The state is the clock time the music will stop at, or null when off. A
+/// fixed time reads right whenever the sheet is opened; a countdown froze.
+class SleepTimerController extends StateNotifier<DateTime?> {
   final Ref _ref;
   Timer? _timer;
 
@@ -20,7 +22,7 @@ class SleepTimerController extends StateNotifier<Duration?> {
 
   void start(Duration d) {
     cancel();
-    state = d;
+    state = DateTime.now().add(d);
     _timer = Timer(d, () async {
       final prefs = _ref.read(sharedPreferencesProvider);
       final fade = prefs.getBool(PrefsKeys.sleepFadeOut) ?? true;
@@ -71,6 +73,20 @@ class SleepTimerSheet extends ConsumerWidget {
               child: Text('Sleep Timer',
                   style: Theme.of(context).textTheme.titleLarge),
             ),
+            if (pb.stopAfterAlbum)
+              ListTile(
+                contentPadding: EdgeInsets.zero,
+                dense: true,
+                leading: const Icon(Icons.stop_circle_outlined),
+                title: const Text('Stopping at end of this album'),
+                trailing: TextButton(
+                  onPressed: () {
+                    pb.stopAfterAlbum = false;
+                    Navigator.pop(context);
+                  },
+                  child: const Text('Cancel'),
+                ),
+              ),
             if (pb.stopAfterCurrent)
               ListTile(
                 contentPadding: EdgeInsets.zero,
@@ -87,7 +103,7 @@ class SleepTimerSheet extends ConsumerWidget {
               ),
             if (active != null) ...[
               Text(
-                'Stops in ${active.inMinutes}:${(active.inSeconds % 60).toString().padLeft(2, '0')}',
+                'Stops at ${TimeOfDay.fromDateTime(active).format(context)}',
                 style: Theme.of(context).textTheme.bodyMedium,
               ),
               const SizedBox(height: 12),
@@ -121,6 +137,17 @@ class SleepTimerSheet extends ConsumerWidget {
                   label: const Text('End of track'),
                   onPressed: () {
                     pb.stopAfterCurrent = true;
+                    pb.stopAfterAlbum = false;
+                    ctrl.cancel();
+                    Navigator.pop(context);
+                  },
+                ),
+                ActionChip(
+                  avatar: const Icon(Icons.album_outlined, size: 16),
+                  label: const Text('End of album'),
+                  onPressed: () {
+                    pb.stopAfterAlbum = true;
+                    pb.stopAfterCurrent = false;
                     ctrl.cancel();
                     Navigator.pop(context);
                   },
@@ -130,6 +157,7 @@ class SleepTimerSheet extends ConsumerWidget {
                     label: Text('$m min'),
                     onPressed: () {
                       pb.stopAfterCurrent = false;
+                      pb.stopAfterAlbum = false;
                       ctrl.start(Duration(minutes: m));
                       Navigator.pop(context);
                     },

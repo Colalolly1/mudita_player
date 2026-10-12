@@ -26,6 +26,22 @@ class LibraryInitializer {
     return _running!;
   }
 
+  /// The launch scan: only new or changed files are opened, so it is cheap.
+  /// It never asks for permission, and is skipped until audio access has
+  /// been granted, so a missing permission can't make songs look deleted.
+  Future<void> refreshOnLaunch() => _launchScan ??= _refresh();
+  Future<void>? _launchScan;
+
+  Future<void> _refresh() async {
+    if (Platform.isAndroid) {
+      final audio = await Permission.audio.isGranted;
+      final storage = await Permission.storage.isGranted;
+      if (!audio && !storage) return;
+    }
+    if ((await repo.getMusicFolders()).isEmpty) return;
+    await repo.rescan();
+  }
+
   Future<void> _run() async {
     if (_ran) return;
     _ran = true;

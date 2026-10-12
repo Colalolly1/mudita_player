@@ -140,6 +140,7 @@ class SettingsScreen extends ConsumerWidget {
             title: const Text('Add music folder'),
             onTap: () => _addFolder(context, ref),
           ),
+          const _AllFilesAccessTile(),
           ListTile(
             leading: const Icon(Icons.refresh),
             title: const Text('Rescan library'),
@@ -751,6 +752,72 @@ class _SectionHeader extends StatelessWidget {
               fontWeight: FontWeight.w500,
             ),
       ),
+    );
+  }
+}
+
+/// Shown only while All files access is missing. Without it, Android 11 and
+/// later hide the cover images in music folders and refuse tag and cover
+/// writes to the music files.
+class _AllFilesAccessTile extends ConsumerStatefulWidget {
+  const _AllFilesAccessTile();
+
+  @override
+  ConsumerState<_AllFilesAccessTile> createState() =>
+      _AllFilesAccessTileState();
+}
+
+class _AllFilesAccessTileState extends ConsumerState<_AllFilesAccessTile>
+    with WidgetsBindingObserver {
+  bool _needed = false;
+
+  @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addObserver(this);
+    _check();
+  }
+
+  @override
+  void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
+    super.dispose();
+  }
+
+  // Back from the system settings page, where it may have been allowed.
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.resumed) _check();
+  }
+
+  Future<void> _check() async {
+    if (!Platform.isAndroid) return;
+    try {
+      final status = await Permission.manageExternalStorage.status;
+      final needed = !status.isGranted && !status.isRestricted;
+      if (mounted && needed != _needed) setState(() => _needed = needed);
+    } catch (_) {}
+  }
+
+  Future<void> _request() async {
+    try {
+      final status = await Permission.manageExternalStorage.request();
+      if (!mounted || !status.isGranted) return;
+      setState(() => _needed = false);
+      // Folder covers that were hidden until now come in with a rescan.
+      ref.read(libraryRepositoryProvider).rescan().catchError((_) {});
+    } catch (_) {}
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    if (!_needed) return const SizedBox.shrink();
+    return ListTile(
+      leading: const Icon(Icons.folder_open_outlined),
+      title: const Text('Allow all files access'),
+      subtitle: const Text(
+          'Needed for cover images in music folders, and to save tags and covers into the files'),
+      onTap: _request,
     );
   }
 }

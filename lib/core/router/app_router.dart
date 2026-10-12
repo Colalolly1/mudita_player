@@ -14,47 +14,30 @@ final routerProvider = Provider<GoRouter>((ref) {
     routes: [
       GoRoute(
         path: '/library',
-        pageBuilder: (ctx, state) => _fade(state, const LibraryShell()),
+        pageBuilder: (ctx, state) => _page(state, const LibraryShell()),
       ),
       GoRoute(
         path: '/now-playing',
-        pageBuilder: (ctx, state) => _slideUp(state, const NowPlayingScreen()),
+        pageBuilder: (ctx, state) => _page(state, const NowPlayingScreen()),
       ),
       GoRoute(
         path: '/queue',
-        pageBuilder: (ctx, state) => _slideUp(state, const QueueScreen()),
+        pageBuilder: (ctx, state) => _page(state, const QueueScreen()),
       ),
       GoRoute(
         path: '/search',
-        pageBuilder: (ctx, state) => _fade(state, const SearchScreen()),
+        pageBuilder: (ctx, state) => _page(state, const SearchScreen()),
       ),
       GoRoute(
         path: '/settings',
-        pageBuilder: (ctx, state) => _fade(state, const SettingsScreen()),
+        pageBuilder: (ctx, state) => _page(state, const SettingsScreen()),
       ),
     ],
   );
 });
 
-CustomTransitionPage<T> _fade<T>(GoRouterState state, Widget child) {
-  return CustomTransitionPage<T>(
-    key: state.pageKey,
-    child: child,
-    transitionDuration: const Duration(milliseconds: 150),
-    transitionsBuilder: (_, anim, __, child) =>
-        FadeTransition(opacity: anim, child: child),
-  );
-}
-
-CustomTransitionPage<T> _slideUp<T>(GoRouterState state, Widget child) {
-  return CustomTransitionPage<T>(
-    key: state.pageKey,
-    child: child,
-    transitionDuration: const Duration(milliseconds: 220),
-    transitionsBuilder: (_, anim, __, child) {
-      final tween = Tween(begin: const Offset(0, 1), end: Offset.zero)
-          .chain(CurveTween(curve: Curves.easeOutCubic));
-      return SlideTransition(position: anim.drive(tween), child: child);
-    },
-  );
+// No transitions: on e-ink every animation frame is a partial refresh, so a
+// fade or slide shows up as smearing and ghosting. Screens just appear.
+NoTransitionPage<T> _page<T>(GoRouterState state, Widget child) {
+  return NoTransitionPage<T>(key: state.pageKey, child: child);
 }

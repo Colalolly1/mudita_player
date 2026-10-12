@@ -1,5 +1,6 @@
 package com.muditakompakt.mudita_player
 
+import android.content.Context
 import android.content.Intent
 import android.media.AudioManager
 import android.net.Uri
@@ -12,6 +13,7 @@ import android.provider.Settings
 import android.view.KeyEvent
 import io.flutter.embedding.android.FlutterActivity
 import io.flutter.embedding.engine.FlutterEngine
+import io.flutter.embedding.engine.FlutterEngineCache
 import io.flutter.plugin.common.EventChannel
 import io.flutter.plugin.common.MethodChannel
 
@@ -24,6 +26,15 @@ import io.flutter.plugin.common.MethodChannel
  * Dart for the user-configured action.
  */
 class MainActivity : FlutterActivity() {
+    companion object {
+        private const val ENGINE_ID = "main"
+
+        // Kept outside the activity: with the cached engine, Dart only sends
+        // this once, but the activity can be recreated many times.
+        @Volatile
+        private var enabled = true
+    }
+
     private val channelName = "com.muditakompakt.mudita_player/hwkeys"
     private val mediaControlChannelName = "com.muditakompakt.mudita_player/media_control"
     private val mediaEventChannelName = "com.muditakompakt.mudita_player/media_events"
@@ -41,7 +52,23 @@ class MainActivity : FlutterActivity() {
     private var pendingTapRunnable: Runnable? = null
     private var longPressFiredForKey = 0
     private var pendingLongPressRunnable: Runnable? = null
-    private var enabled = true
+
+    // One engine for the whole process. It is not destroyed with the
+    // activity, so swiping the app from Recents leaves the music playing.
+    override fun provideFlutterEngine(context: Context): FlutterEngine? {
+        val cache = FlutterEngineCache.getInstance()
+        cache.get(ENGINE_ID)?.let { return it }
+        val engine = FlutterEngine(context.applicationContext)
+        cache.put(ENGINE_ID, engine)
+        return engine
+    }
+
+    // Back on the first screen hides the app instead of finishing it, so
+    // playback carries on.
+    override fun popSystemNavigator(): Boolean {
+        moveTaskToBack(true)
+        return true
+    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -76,13 +103,19 @@ class MainActivity : FlutterActivity() {
             mediaControlChannel?.setMethodCallHandler { call, result ->
                 try {
                     when (call.method) {
+                        // The application context: with the cached engine
+                        // this handler can outlive the activity that set it.
                         "start" -> {
-                            startService(Intent(this, MediaPlaybackService::class.java))
+                            applicationContext.startService(
+                                Intent(applicationContext, MediaPlaybackService::class.java),
+                            )
                             result.success(null)
                         }
                         "stop" -> {
                             MediaPlaybackService.instance?.stopAndRelease()
-                            stopService(Intent(this, MediaPlaybackService::class.java))
+                            applicationContext.stopService(
+                                Intent(applicationContext, MediaPlaybackService::class.java),
+                            )
                             result.success(null)
                         }
                         "setMetadata" -> {

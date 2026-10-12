@@ -33,7 +33,7 @@ class _LibraryShellState extends ConsumerState<LibraryShell> {
         child: Column(
           children: [
             Padding(
-              padding: const EdgeInsets.fromLTRB(20, 14, 20, 6),
+              padding: const EdgeInsets.fromLTRB(20, 14, 20, 0),
               child: Row(
                 crossAxisAlignment: CrossAxisAlignment.baseline,
                 textBaseline: TextBaseline.alphabetic,
@@ -50,7 +50,9 @@ class _LibraryShellState extends ConsumerState<LibraryShell> {
             ),
             SingleChildScrollView(
               scrollDirection: Axis.horizontal,
-              padding: const EdgeInsets.fromLTRB(20, 2, 20, 10),
+              // No vertical padding: each word now carries its own 48 dp
+              // tap height.
+              padding: const EdgeInsets.symmetric(horizontal: 20),
               child: Row(
                 children: [
                   for (var i = 0; i < _views.length; i++) ...[
@@ -157,22 +159,31 @@ class _ViewWord extends StatelessWidget {
     return InkWell(
       onTap: onTap,
       borderRadius: BorderRadius.circular(4),
-      child: Container(
-        padding: const EdgeInsets.only(bottom: 4),
-        decoration: BoxDecoration(
-          border: Border(
-            bottom: BorderSide(
-              color: selected ? scheme.onSurface : Colors.transparent,
-              width: 2,
+      // A 48 dp target around the word; the word and underline look the same.
+      child: ConstrainedBox(
+        constraints: const BoxConstraints(minWidth: 48, minHeight: 48),
+        child: Center(
+          widthFactor: 1,
+          heightFactor: 1,
+          child: Container(
+            padding: const EdgeInsets.only(bottom: 4),
+            decoration: BoxDecoration(
+              border: Border(
+                bottom: BorderSide(
+                  color: selected ? scheme.onSurface : Colors.transparent,
+                  width: 2,
+                ),
+              ),
+            ),
+            child: Text(
+              text,
+              style: Theme.of(context).textTheme.bodyLarge?.copyWith(
+                    fontWeight: selected ? FontWeight.w600 : FontWeight.w400,
+                    color:
+                        selected ? scheme.onSurface : scheme.onSurfaceVariant,
+                  ),
             ),
           ),
-        ),
-        child: Text(
-          text,
-          style: Theme.of(context).textTheme.bodyLarge?.copyWith(
-                fontWeight: selected ? FontWeight.w600 : FontWeight.w400,
-                color: selected ? scheme.onSurface : scheme.onSurfaceVariant,
-              ),
         ),
       ),
     );

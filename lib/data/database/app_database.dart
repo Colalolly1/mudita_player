@@ -107,8 +107,23 @@ class AppDatabase extends _$AppDatabase {
   Future<List<Track>> allTracks() => select(tracks).get();
   Stream<List<Track>> watchAllTracks() => select(tracks).watch();
 
+  /// Insert a track, or update the row that already has its uri. Keyed on
+  /// uri, not id: a rescan has no id, so the old upsert threw on every known
+  /// file. The existing row keeps its id (and with it playlists, favourites
+  /// and play counts) and its date added.
   Future<int> upsertTrack(TracksCompanion entry) async {
-    return await into(tracks).insertOnConflictUpdate(entry);
+    return await into(tracks).insert(
+      entry,
+      onConflict: DoUpdate(
+        (_) => entry.copyWith(dateAdded: const Value.absent()),
+        target: [tracks.uri],
+      ),
+    );
+  }
+
+  Future<void> setTrackArt(int id, String artUri) async {
+    await (update(tracks)..where((t) => t.id.equals(id)))
+        .write(TracksCompanion(artUri: Value(artUri)));
   }
 
   Future<void> deleteTrackByUri(String uri) async {
@@ -346,22 +361,30 @@ class AppDatabase extends _$AppDatabase {
   /// Removes duplicate tracks. Two tracks are "the same" if they share
   /// title + artist + album + track number. Keeps the row with the smallest
   /// id, which preserves favorites/ratings/play counts on the canonical row.
+  ///
+  /// Rows with no artist and no album are left out: their title is often
+  /// just the file name ("01", "Track 1"), so different songs looked equal.
   Future<int> dedupeTracks() async {
     final result = await customUpdate(
       '''
       DELETE FROM tracks
-      WHERE id NOT IN (
-        SELECT MIN(id)
-        FROM tracks
-        GROUP BY
-          LOWER(TRIM(title)),
-          LOWER(TRIM(artist)),
-          LOWER(TRIM(album)),
-          track_number
-      )
+      WHERE (TRIM(artist) != '' OR TRIM(album) != '')
+        AND id NOT IN (
+          SELECT MIN(id)
+          FROM tracks
+          WHERE TRIM(artist) != '' OR TRIM(album) != ''
+          GROUP BY
+            LOWER(TRIM(title)),
+            LOWER(TRIM(artist)),
+            LOWER(TRIM(album)),
+            track_number
+        )
       ''',
-      updates: {tracks},
     );
+    // Only wake the library lists when something was actually removed.
+    if (result > 0) {
+      notifyUpdates({TableUpdate.onTable(tracks, kind: UpdateKind.delete)});
+    }
     return result;
   }
 

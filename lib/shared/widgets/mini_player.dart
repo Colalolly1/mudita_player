@@ -11,15 +11,13 @@ class MiniPlayer extends ConsumerWidget {
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
-    final state = ref.watch(playbackControllerProvider);
+    // Only the track and play/pause: anything else would redraw this bar
+    // (and the e-ink screen under it) for nothing.
+    final t = ref.watch(playbackControllerProvider.select((s) => s.current));
+    final playing =
+        ref.watch(playbackControllerProvider.select((s) => s.playing));
     final scheme = Theme.of(context).colorScheme;
-    if (state.current == null) return const SizedBox.shrink();
-    final t = state.current!;
-
-    final progress = state.duration.inMilliseconds == 0
-        ? 0.0
-        : (state.position.inMilliseconds / state.duration.inMilliseconds)
-            .clamp(0.0, 1.0);
+    if (t == null) return const SizedBox.shrink();
 
     return Material(
       color: scheme.surface,
@@ -33,12 +31,7 @@ class MiniPlayer extends ConsumerWidget {
           child: Column(
             mainAxisSize: MainAxisSize.min,
             children: [
-              LinearProgressIndicator(
-                value: progress,
-                minHeight: 1,
-                backgroundColor: scheme.outlineVariant,
-                valueColor: AlwaysStoppedAnimation(scheme.onSurface),
-              ),
+              Divider(height: 1, thickness: 1, color: scheme.outlineVariant),
               SizedBox(
                 height: 64,
                 child: Row(
@@ -76,7 +69,7 @@ class MiniPlayer extends ConsumerWidget {
                     ),
                     IconButton(
                       iconSize: 30,
-                      icon: Icon(state.playing ? Icons.pause : Icons.play_arrow),
+                      icon: Icon(playing ? Icons.pause : Icons.play_arrow),
                       onPressed: () => ref
                           .read(playbackControllerProvider.notifier)
                           .toggle(),

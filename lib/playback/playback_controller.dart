@@ -16,7 +16,6 @@ class PlaybackState {
   final List<Track> queue;
   final int index;
   final bool playing;
-  final Duration position;
   final Duration duration;
   final ShuffleMode shuffle;
   final RepeatMode repeat;
@@ -26,7 +25,6 @@ class PlaybackState {
     this.queue = const [],
     this.index = 0,
     this.playing = false,
-    this.position = Duration.zero,
     this.duration = Duration.zero,
     this.shuffle = ShuffleMode.off,
     this.repeat = RepeatMode.off,
@@ -37,7 +35,6 @@ class PlaybackState {
     List<Track>? queue,
     int? index,
     bool? playing,
-    Duration? position,
     Duration? duration,
     ShuffleMode? shuffle,
     RepeatMode? repeat,
@@ -48,7 +45,6 @@ class PlaybackState {
       queue: queue ?? this.queue,
       index: index ?? this.index,
       playing: playing ?? this.playing,
-      position: position ?? this.position,
       duration: duration ?? this.duration,
       shuffle: shuffle ?? this.shuffle,
       repeat: repeat ?? this.repeat,
@@ -73,12 +69,18 @@ class PlaybackController extends StateNotifier<PlaybackState> {
   /// Sleep-timer "end of track": when set, playback pauses as soon as the
   /// current song finishes (i.e. at the transition to the next one).
   bool stopAfterCurrent = false;
+  /// Sleep-timer "end of album": pause when the next song belongs to a
+  /// different album, or when the queue runs out.
+  bool stopAfterAlbum = false;
+  bool _completing = false;
+  // Set while rewinding to the start after the queue ends, so the rewind
+  // isn't counted as a play of the first song.
+  int? _rewindIndex;
   // The pre-shuffle order, so we can restore linear order when the user turns
   // shuffle off. We manage shuffle ourselves (the queue list IS the play
   // order, always played linearly) — this keeps "play next" deterministic,
   // which just_audio's internal shuffle does not.
   List<Track> _originalOrder = [];
-  StreamSubscription? _posSub;
   StreamSubscription? _durSub;
   StreamSubscription? _stateSub;
   StreamSubscription? _idxSub;
@@ -184,22 +186,15 @@ class PlaybackController extends StateNotifier<PlaybackState> {
   AudioPlayer get player => _player;
 
   void _wire() {
-    // Once a second, not five times: every tick rebuilds the now-playing
-    // screen, and on E-Ink each rebuild is a screen refresh.
-    _posSub = _player
-        .createPositionStream(
-          steps: 1,
-          minPeriod: const Duration(seconds: 1),
-          maxPeriod: const Duration(seconds: 1),
-        )
-        .listen((p) {
-      state = state.copyWith(position: p);
-    });
+    // Position is not part of this state. It lives in positionStreamProvider,
+    // so its once-a-second ticks only redraw the widgets that show it.
     _durSub = _player.durationStream.listen((d) {
       if (d != null) state = state.copyWith(duration: d);
     });
     _stateSub = _player.playerStateStream.listen((s) {
-      state = state.copyWith(playing: s.playing);
+      if (s.playing != state.playing) {
+        state = state.copyWith(playing: s.playing);
+      }
       if (s.processingState == ProcessingState.completed) {
         _onTrackCompleted();
       }
@@ -210,9 +205,21 @@ class PlaybackController extends StateNotifier<PlaybackState> {
       // the source — it would clobber state against the wrong queue list.
       if (_rebuilding) return;
       if (i >= 0 && i < state.queue.length) {
-        // Sleep timer "end of track": the previous song just finished.
-        if (stopAfterCurrent && i != state.index) {
+        final rewound = _rewindIndex == i;
+        _rewindIndex = null;
+        // Sleep timer "end of track" / "end of album": the previous song
+        // just finished.
+        final prev = state.current;
+        // Repeat all looping from the last song back to the first also ends
+        // the album, even when the whole queue is one album.
+        final wrapped = i == 0 && state.index == state.queue.length - 1;
+        final albumEnded = stopAfterAlbum &&
+            i != state.index &&
+            prev != null &&
+            (wrapped || !_sameAlbum(prev, state.queue[i]));
+        if ((stopAfterCurrent && i != state.index) || albumEnded) {
           stopAfterCurrent = false;
+          stopAfterAlbum = false;
           await _player.pause();
           await _player.seek(Duration.zero);
         }
@@ -223,10 +230,17 @@ class PlaybackController extends StateNotifier<PlaybackState> {
           index: i,
           current: nowPlaying,
         );
-        await _repo.recordPlay(nowPlaying.id);
+        if (!rewound) await _repo.recordPlay(nowPlaying.id);
         await _saveResumeState();
       }
     });
+  }
+
+  static bool _sameAlbum(Track a, Track b) {
+    if (a.album.isEmpty || a.album != b.album) return false;
+    final aa = a.albumArtist.isEmpty ? a.artist : a.albumArtist;
+    final bb = b.albumArtist.isEmpty ? b.artist : b.albumArtist;
+    return aa == bb;
   }
 
   Future<void> setSkipSilence(bool enabled) async {
@@ -379,6 +393,7 @@ class PlaybackController extends StateNotifier<PlaybackState> {
   }
 
   Future<void> _loadQueue({required int startAt}) async {
+    _rewindIndex = null;
     final sources = state.queue.map(_toMediaItem).toList();
     // Gapless playback: when ON (default), each upcoming source is prepared
     // eagerly so the transition between tracks is sample-accurate. When OFF,
@@ -473,7 +488,6 @@ class PlaybackController extends StateNotifier<PlaybackState> {
       queue: const [],
       index: 0,
       clearCurrent: true,
-      position: Duration.zero,
       duration: Duration.zero,
     );
     await _prefs.remove(PrefsKeys.lastTrackId);
@@ -501,7 +515,7 @@ class PlaybackController extends StateNotifier<PlaybackState> {
     if (cur == null) return;
     final dur = state.duration.inMilliseconds;
     if (dur <= 0) return;
-    final progressed = state.position.inMilliseconds / dur;
+    final progressed = _player.position.inMilliseconds / dur;
     if (progressed < AppConstants.skipThresholdFraction) {
       _repo.recordSkip(cur.id);
     }
@@ -730,7 +744,25 @@ class PlaybackController extends StateNotifier<PlaybackState> {
     _pendingQueueIds.remove(removed.id);
   }
 
-  void _onTrackCompleted() {}
+  /// The queue ran out (repeat is off). just_audio stays "playing" in the
+  /// completed state, so the notification and earbuds acted as if music was
+  /// still on. Pause for real and go back to the first song, so Play works.
+  Future<void> _onTrackCompleted() async {
+    if (_completing) return;
+    _completing = true;
+    try {
+      stopAfterCurrent = false;
+      stopAfterAlbum = false;
+      await _player.pause();
+      if (state.queue.isEmpty) return;
+      if ((_player.currentIndex ?? 0) != 0) _rewindIndex = 0;
+      await _player.seek(Duration.zero, index: 0);
+    } catch (_) {
+      // Leave the player paused where it is.
+    } finally {
+      _completing = false;
+    }
+  }
 
   int? _savedQueueSig;
 
@@ -738,7 +770,7 @@ class PlaybackController extends StateNotifier<PlaybackState> {
     final cur = state.current;
     if (cur == null) return;
     await _prefs.setInt(PrefsKeys.lastTrackId, cur.id);
-    // Read live position from player (state.position can be slightly stale).
+    // Read the live position from the player.
     await _prefs.setInt(PrefsKeys.lastPositionMs, _player.position.inMilliseconds);
     // The queue list is only rewritten when it actually changes. Writing
     // hundreds of ids to disk every five seconds was steady work for nothing.
@@ -783,7 +815,6 @@ class PlaybackController extends StateNotifier<PlaybackState> {
   @override
   Future<void> dispose() async {
     _resumeSaveTimer?.cancel();
-    await _posSub?.cancel();
     await _durSub?.cancel();
     await _stateSub?.cancel();
     await _idxSub?.cancel();
@@ -803,6 +834,8 @@ final playbackControllerProvider =
   );
 });
 
+/// Playback position, once a second while playing and on every seek. Only
+/// the widgets that show the position should watch this.
 final positionStreamProvider = StreamProvider<Duration>((ref) {
   final p = ref.watch(playbackControllerProvider.notifier);
   return p.player.createPositionStream(

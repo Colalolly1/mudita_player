@@ -132,14 +132,18 @@ class _Synced extends ConsumerWidget {
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
-    final pos = ref.watch(playbackControllerProvider).position;
+    final pos = ref.watch(positionStreamProvider).valueOrNull ??
+        ref.read(playbackControllerProvider.notifier).player.position;
     int active = -1;
     for (var i = 0; i < lyrics.synced.length; i++) {
       if (lyrics.synced[i].time <= pos) active = i;
     }
     if (active >= 0) WidgetsBinding.instance.addPostFrameCallback((_) => onActive(active));
 
-    final accent = Theme.of(context).colorScheme.primary;
+    final scheme = Theme.of(context).colorScheme;
+    final accent = scheme.primary;
+    // Other lines: about #757575 on white, never lighter than #777777.
+    final muted = Color.lerp(scheme.onSurface, scheme.surface, 0.42)!;
     return ListView.builder(
       controller: scroll,
       padding: const EdgeInsets.symmetric(vertical: 80, horizontal: 24),
@@ -161,12 +165,7 @@ class _Synced extends ConsumerWidget {
                     ? (isActive ? 32 : 18)
                     : (isActive ? 22 : 16),
                 fontWeight: isActive ? FontWeight.w700 : FontWeight.w400,
-                color: isActive
-                    ? accent
-                    : Theme.of(context)
-                        .colorScheme
-                        .onSurface
-                        .withAlpha(karaoke ? 80 : 140),
+                color: isActive ? accent : muted,
                 height: 1.4,
               ),
             ),

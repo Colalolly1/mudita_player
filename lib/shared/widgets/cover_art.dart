@@ -17,13 +17,18 @@ class CoverArt extends StatelessWidget {
   /// Convert any of the URI shapes we store (`file:///path`, `/path`,
   /// `http://...`) into something Image.* can actually load.
   static Widget? _imageFor(String uri,
-      {double? width, double? height, BoxFit? fit, Widget? errorWidget}) {
+      {double? width,
+      double? height,
+      BoxFit? fit,
+      Widget? errorWidget,
+      int? cacheWidth}) {
     if (uri.startsWith('http://') || uri.startsWith('https://')) {
       return Image.network(
         uri,
         width: width,
         height: height,
         fit: fit,
+        cacheWidth: cacheWidth,
         errorBuilder: (_, __, ___) => errorWidget ?? const SizedBox.shrink(),
       );
     }
@@ -36,6 +41,7 @@ class CoverArt extends StatelessWidget {
       width: width,
       height: height,
       fit: fit,
+      cacheWidth: cacheWidth,
       errorBuilder: (_, __, ___) => errorWidget ?? const SizedBox.shrink(),
     );
   }
@@ -59,6 +65,19 @@ class CoverArt extends StatelessWidget {
 
     if (artUri == null || artUri!.isEmpty) return placeholder;
 
+    if (size != double.infinity) return _image(context, size, placeholder);
+    // Full-width covers: take the size from the space they are given.
+    return LayoutBuilder(builder: (context, c) {
+      final side = c.hasBoundedWidth ? c.maxWidth : c.maxHeight;
+      return _image(context, side, placeholder);
+    });
+  }
+
+  /// Decode at the size the cover is shown, not the size of the file, so a
+  /// big cover in a 44 px row doesn't cost a full-size bitmap.
+  Widget _image(BuildContext context, double side, Widget placeholder) {
+    final px = side * MediaQuery.devicePixelRatioOf(context);
+    final cacheWidth = px.isFinite && px > 0 ? px.round() : null;
     final w = size == double.infinity ? null : size;
     return ClipRRect(
       borderRadius: BorderRadius.circular(radius),
@@ -68,6 +87,7 @@ class CoverArt extends StatelessWidget {
             height: w,
             fit: BoxFit.cover,
             errorWidget: placeholder,
+            cacheWidth: cacheWidth,
           ) ??
           placeholder,
     );

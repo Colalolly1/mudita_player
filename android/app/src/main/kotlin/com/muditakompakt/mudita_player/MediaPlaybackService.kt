@@ -5,6 +5,7 @@ import android.app.NotificationManager
 import android.app.PendingIntent
 import android.app.Service
 import android.content.Intent
+import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.media.AudioManager
 import android.os.Build
@@ -42,6 +43,8 @@ class MediaPlaybackService : Service() {
         const val ACTION_STOP = "stop"
         const val ACTION_SEEK = "seek"
 
+        private const val ART_SIZE_PX = 512
+
         @Volatile
         var instance: MediaPlaybackService? = null
 
@@ -63,6 +66,8 @@ class MediaPlaybackService : Service() {
     private var lastArtPath: String? = null
     private var lastPlaying = false
     private var lastPositionMs: Long = 0L
+    private var artKey: String? = null
+    private var artBitmap: Bitmap? = null
 
     override fun onCreate() {
         super.onCreate()
@@ -153,6 +158,12 @@ class MediaPlaybackService : Service() {
         }
         // Re-show notification so the foreground service stays alive.
         showNotification()
+        // An earbud press started us but the app isn't running, so nothing
+        // can act on it. Leave quietly instead of keeping an empty notification.
+        if (intent?.action == Intent.ACTION_MEDIA_BUTTON && eventSink == null) {
+            stopAndRelease()
+            return START_NOT_STICKY
+        }
         return START_STICKY
     }
 
@@ -183,13 +194,10 @@ class MediaPlaybackService : Service() {
             try {
                 val cleanPath =
                     if (artPath.startsWith("file://")) artPath.substring(7) else artPath
-                val file = File(cleanPath)
-                if (file.exists()) {
-                    val bmp = BitmapFactory.decodeFile(cleanPath)
-                    if (bmp != null) {
-                        builder.putBitmap(MediaMetadataCompat.METADATA_KEY_ALBUM_ART, bmp)
-                        builder.putBitmap(MediaMetadataCompat.METADATA_KEY_DISPLAY_ICON, bmp)
-                    }
+                val bmp = loadArt(cleanPath)
+                if (bmp != null) {
+                    builder.putBitmap(MediaMetadataCompat.METADATA_KEY_ALBUM_ART, bmp)
+                    builder.putBitmap(MediaMetadataCompat.METADATA_KEY_DISPLAY_ICON, bmp)
                 }
             } catch (t: Throwable) {
                 Log.w(TAG, "could not load art bitmap", t)
@@ -198,6 +206,30 @@ class MediaPlaybackService : Service() {
 
         mediaSession.setMetadata(builder.build())
         showNotification()
+    }
+
+    /// Decode the cover at about 512 px rather than full size, and reuse it
+    /// while the path and file stay the same (every track of an album).
+    private fun loadArt(path: String): Bitmap? {
+        val file = File(path)
+        if (!file.exists()) return null
+        val key = "$path:${file.lastModified()}"
+        if (key == artKey) return artBitmap
+
+        val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+        BitmapFactory.decodeFile(path, bounds)
+        if (bounds.outWidth <= 0 || bounds.outHeight <= 0) return null
+        var sample = 1
+        while (bounds.outWidth / (sample * 2) >= ART_SIZE_PX &&
+            bounds.outHeight / (sample * 2) >= ART_SIZE_PX
+        ) {
+            sample *= 2
+        }
+        val opts = BitmapFactory.Options().apply { inSampleSize = sample }
+        val bmp = BitmapFactory.decodeFile(path, opts) ?: return null
+        artKey = key
+        artBitmap = bmp
+        return bmp
     }
 
     /// Count taps within a 500ms window: 1 = play/pause, 2 = next, 3 = prev.

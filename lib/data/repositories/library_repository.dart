@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:io';
 import 'dart:typed_data';
 
@@ -16,6 +17,13 @@ class LibraryRepository {
   final LibraryScanner scanner;
 
   LibraryRepository(this.db, this.scanner);
+
+  // Tag and cover writes to the music files that failed, as short messages.
+  // The app shows them; before, these failures were swallowed.
+  final _writeErrors = StreamController<String>.broadcast();
+  Stream<String> get writeErrors => _writeErrors.stream;
+
+  void dispose() => _writeErrors.close();
 
   Future<List<Track>> allTracks() => db.allTracks();
   Stream<List<Track>> watchAllTracks() => db.watchAllTracks();
@@ -221,7 +229,10 @@ class LibraryRepository {
         );
         await AudioTags.write(path, tag);
       }
-    } catch (_) {}
+    } catch (_) {
+      _writeErrors.add("Saved in the library only. The file couldn't be "
+          'changed; allow all files access in Settings.');
+    }
 
     final companion = trackNumber == null
         ? TracksCompanion(
@@ -238,7 +249,7 @@ class LibraryRepository {
   }
 
   /// Write [bytes] as the front-cover picture in every track of the album.
-  /// Per-file failures (unsupported format, file in use) are skipped.
+  /// Files that can't be written are skipped and reported in [writeErrors].
   Future<void> _embedArtIntoAlbumFiles(
     AlbumKey key,
     List<int> bytes,
@@ -251,15 +262,15 @@ class LibraryRepository {
       mimeType: mime,
       bytes: Uint8List.fromList(bytes),
     );
+    var failed = 0;
     for (final t in tracks) {
       try {
         String path = t.uri;
         if (path.startsWith('file://')) path = path.substring(7);
         if (path.startsWith('content://')) continue; // can't rewrite via SAF
-        Tag? existing;
-        try {
-          existing = await AudioTags.read(path);
-        } catch (_) {}
+        // A read error lands in the catch below: writing after a failed read
+        // would blank the title and artist. (null just means no tag yet.)
+        final existing = await AudioTags.read(path);
         final tag = Tag(
           title: existing?.title,
           trackArtist: existing?.trackArtist,
@@ -276,8 +287,13 @@ class LibraryRepository {
         );
         await AudioTags.write(path, tag);
       } catch (_) {
-        continue;
+        failed++;
       }
+    }
+    if (failed > 0) {
+      final files = failed == 1 ? '1 file' : '$failed files';
+      _writeErrors.add("Cover saved in the app, but couldn't be written into "
+          '$files. Allow all files access in Settings.');
     }
   }
 
@@ -310,16 +326,21 @@ class LibraryRepository {
     for (final f in folders) {
       await scanner.scanFolder(f.uri, db);
     }
-    // Always dedupe at the end so users never see two rows for the same song
-    // — regardless of whether the cause is symlinks, duplicate files on disk,
-    // or stale rows from an older build.
-    try {
-      await db.dedupeTracks();
-    } catch (_) {}
-    // Drop rows whose file is gone, so deleted/moved music stops haunting
-    // the Songs list.
+    await _pruneThenDedupe();
+  }
+
+  /// Drop rows whose file is gone, then dedupe. The order matters: after a
+  /// folder moves, its old rows (lower ids) are still there, so deduping
+  /// first kept the old rows and deleted the new ones, and the prune then
+  /// removed the old ones too, losing the songs from the library.
+  Future<void> _pruneThenDedupe() async {
     try {
       await pruneMissingFiles();
+    } catch (_) {}
+    // Dedupe so users never see two rows for the same song, whether the
+    // cause is symlinks, duplicate files on disk, or rows from older builds.
+    try {
+      await db.dedupeTracks();
     } catch (_) {}
   }
 
@@ -329,14 +350,19 @@ class LibraryRepository {
   Future<int> pruneMissingFiles() async {
     final all = await db.allTracks();
     final gone = <int>[];
+    var checked = 0;
     for (final t in all) {
       final uri = t.uri;
       if (uri.startsWith('content://')) continue;
       final path = uri.startsWith('file://') ? uri.substring(7) : uri;
+      checked++;
       try {
         if (!await File(path).exists()) gone.add(t.id);
       } catch (_) {}
     }
+    // Every file missing means storage or permission trouble, not a deleted
+    // library. Keep the rows (and their plays and playlists).
+    if (checked > 0 && gone.length == checked) return 0;
     await db.deleteTracksByIds(gone);
     return gone.length;
   }
@@ -400,9 +426,7 @@ class LibraryRepository {
   Future<void> addMusicFolder(String uri, String displayName) async {
     await db.addMusicFolder(uri, displayName);
     await scanner.scanFolder(uri, db);
-    try {
-      await db.dedupeTracks();
-    } catch (_) {}
+    await _pruneThenDedupe();
   }
 
   Future<void> removeMusicFolder(String uri) => db.removeMusicFolder(uri);
@@ -410,8 +434,10 @@ class LibraryRepository {
 }
 
 final libraryRepositoryProvider = Provider<LibraryRepository>((ref) {
-  return LibraryRepository(
+  final repo = LibraryRepository(
     ref.watch(databaseProvider),
     ref.watch(libraryScannerProvider),
   );
+  ref.onDispose(repo.dispose);
+  return repo;
 });

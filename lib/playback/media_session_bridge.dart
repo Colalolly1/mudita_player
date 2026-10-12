@@ -19,6 +19,7 @@ class MediaSessionBridge {
   final Ref _ref;
   StreamSubscription? _eventSub;
   ProviderSubscription? _stateSub;
+  ProviderSubscription? _posSub;
   bool _serviceStarted = false;
   String _lastTitle = '';
   String? _lastArt;
@@ -37,6 +38,12 @@ class MediaSessionBridge {
       playbackControllerProvider,
       (prev, next) => _push(next),
       fireImmediately: true,
+    );
+    // Position is no longer part of PlaybackState, so listen to it here to
+    // catch seeks.
+    _posSub = _ref.listen<AsyncValue<Duration>>(
+      positionStreamProvider,
+      (prev, next) => _push(_ref.read(playbackControllerProvider)),
     );
   }
 
@@ -96,7 +103,11 @@ class MediaSessionBridge {
     // listener on the phone (Bigme's standby app among them) woke for it.
     final nowMs = DateTime.now().millisecondsSinceEpoch;
     final playStateChanged = next.playing != _lastPlaying;
-    final posMs = next.position.inMilliseconds;
+    final posMs = _ref
+        .read(playbackControllerProvider.notifier)
+        .player
+        .position
+        .inMilliseconds;
     final expectedMs = _lastPushedPosMs +
         (_lastPlaying ? nowMs - _lastStatePushMs : 0);
     final seeked = (posMs - expectedMs).abs() > 1500;
@@ -107,7 +118,7 @@ class MediaSessionBridge {
       try {
         await _control.invokeMethod('setPlaybackState', {
           'playing': next.playing,
-          'positionMs': next.position.inMilliseconds,
+          'positionMs': posMs,
         });
       } catch (_) {}
     }
@@ -136,6 +147,12 @@ class MediaSessionBridge {
   void _onAction(dynamic ev) {
     final action = ev as String? ?? '';
     final pb = _ref.read(playbackControllerProvider.notifier);
+    // An earbud press with nothing loaded started the service; there is
+    // nothing to control, so close it again.
+    if (_ref.read(playbackControllerProvider).current == null) {
+      _control.invokeMethod('stop').catchError((_) => null);
+      return;
+    }
     if (action == 'play') {
       pb.play();
     } else if (action == 'pause') {
@@ -155,6 +172,7 @@ class MediaSessionBridge {
   void dispose() {
     _eventSub?.cancel();
     _stateSub?.close();
+    _posSub?.close();
     if (_serviceStarted) {
       _control.invokeMethod('stop').catchError((_) => null);
     }

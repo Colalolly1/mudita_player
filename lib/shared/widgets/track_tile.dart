@@ -25,8 +25,9 @@ class TrackTile extends ConsumerWidget {
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
-    final current = ref.watch(playbackControllerProvider).current;
-    final isPlaying = current?.id == track.id;
+    // A bool per row: only the old and new playing rows rebuild on a change.
+    final isPlaying = ref.watch(playbackControllerProvider
+        .select((s) => s.current?.id == track.id));
     final accent = Theme.of(context).colorScheme.primary;
     final globalHide = ref.watch(themeControllerProvider).hideCoverArt;
     final showArt = !(hideArt || globalHide);
@@ -121,7 +122,9 @@ class TrackTile extends ConsumerWidget {
             ListTile(
               leading: const Icon(Icons.star_outline),
               title: const Text('Rating'),
-              trailing: _StarBar(
+              // Under the word, not beside it: five 48 dp stars don't fit
+              // next to it on a 360 dp screen.
+              subtitle: _StarBar(
                 value: track.rating,
                 onChanged: (v) async {
                   await ref
@@ -221,7 +224,8 @@ class _StarBar extends StatelessWidget {
         final filled = i < value;
         return IconButton(
           padding: EdgeInsets.zero,
-          constraints: const BoxConstraints(minWidth: 28, minHeight: 28),
+          visualDensity: VisualDensity.standard,
+          constraints: const BoxConstraints(minWidth: 48, minHeight: 48),
           icon: Icon(filled ? Icons.star : Icons.star_border, size: 18),
           onPressed: () => onChanged(value == i + 1 ? 0 : i + 1),
         );

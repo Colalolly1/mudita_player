@@ -14,15 +14,22 @@ class ArtLoader {
     'front.jpg', 'front.jpeg', 'front.png',
   ];
 
-  Future<String?> loadFor(String trackPath, Directory artDir, {Tag? tag}) async {
+  /// cover.jpg, folder.png and the like next to the track. On Android 11+
+  /// these image files are only visible with All files access.
+  Future<String?> folderCoverFor(String trackPath) async {
     final folder = Directory(p.dirname(trackPath));
-
     for (final name in _coverNames) {
       final f = File(p.join(folder.path, name));
       if (await f.exists()) return f.path;
       final upper = File(p.join(folder.path, name[0].toUpperCase() + name.substring(1)));
       if (await upper.exists()) return upper.path;
     }
+    return null;
+  }
+
+  Future<String?> loadFor(String trackPath, Directory artDir, {Tag? tag}) async {
+    final cover = await folderCoverFor(trackPath);
+    if (cover != null) return cover;
 
     if (tag != null && tag.pictures.isNotEmpty) {
       final pic = tag.pictures.first;

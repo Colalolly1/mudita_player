@@ -13,6 +13,7 @@ import '../../shared/providers/library_providers.dart';
 import '../library/album_detail_screen.dart';
 import '../library/artist_detail_screen.dart';
 import '../lyrics_view/lyrics_screen.dart';
+import '../settings/sleep_timer_sheet.dart';
 
 void _openAlbum(BuildContext context, Track t) {
   if (t.album.isEmpty) return;
@@ -192,7 +193,6 @@ class _PortraitLayout extends ConsumerWidget {
             children: [
               const SizedBox(height: 20),
               _TitleBlock(),
-              const SizedBox(height: 18),
               _SeekBar(),
               const SizedBox(height: 14),
               _Controls(),
@@ -258,7 +258,7 @@ class _LandscapeLayout extends ConsumerWidget {
               mainAxisAlignment: MainAxisAlignment.center,
               children: [
                 _TitleBlock(),
-                const SizedBox(height: 20),
+                const SizedBox(height: 1),
                 _SeekBar(),
                 const SizedBox(height: 10),
                 _Controls(),
@@ -348,48 +348,83 @@ class _TitleBlock extends ConsumerWidget {
   }
 }
 
-class _SeekBar extends ConsumerWidget {
+class _SeekBar extends ConsumerStatefulWidget {
   @override
-  Widget build(BuildContext context, WidgetRef ref) {
-    final state = ref.watch(playbackControllerProvider);
-    final pos = state.position;
-    final dur = state.duration;
+  ConsumerState<_SeekBar> createState() => _SeekBarState();
+}
+
+class _SeekBarState extends ConsumerState<_SeekBar> {
+  // Where the finger is while dragging. The seek happens once, on release.
+  double? _dragMs;
+
+  // The thin track sits in a 48 px band (19 px above and below the thumb)
+  // so it is easy to hit; the times sit just under the track as before.
+  static const double _height = 48;
+  static const double _labelsTop = 29;
+
+  @override
+  Widget build(BuildContext context) {
+    final dur =
+        ref.watch(playbackControllerProvider.select((s) => s.duration));
+    final pos = ref.watch(positionStreamProvider).valueOrNull ??
+        ref.read(playbackControllerProvider.notifier).player.position;
     final maxMs = dur.inMilliseconds <= 0 ? 1 : dur.inMilliseconds;
+    final valueMs = (_dragMs ?? pos.inMilliseconds.toDouble())
+        .clamp(0, maxMs)
+        .toDouble();
+    final shown = Duration(milliseconds: valueMs.toInt());
     final scheme = Theme.of(context).colorScheme;
 
     return Padding(
       padding: const EdgeInsets.symmetric(horizontal: 14),
-      child: Column(
-        children: [
-          SliderTheme(
-            data: SliderTheme.of(context).copyWith(
-              trackHeight: 2,
-              activeTrackColor: scheme.onSurface,
-              inactiveTrackColor: scheme.outlineVariant,
-              thumbColor: scheme.onSurface,
-              overlayShape: SliderComponentShape.noOverlay,
-              thumbShape: const RoundSliderThumbShape(enabledThumbRadius: 5),
+      child: SizedBox(
+        height: _height,
+        child: Stack(
+          clipBehavior: Clip.none,
+          children: [
+            Positioned.fill(
+              child: SliderTheme(
+                data: SliderTheme.of(context).copyWith(
+                  trackHeight: 2,
+                  activeTrackColor: scheme.onSurface,
+                  inactiveTrackColor: scheme.outlineVariant,
+                  thumbColor: scheme.onSurface,
+                  overlayShape: SliderComponentShape.noOverlay,
+                  thumbShape:
+                      const RoundSliderThumbShape(enabledThumbRadius: 5),
+                ),
+                child: Slider(
+                  min: 0,
+                  max: maxMs.toDouble(),
+                  value: valueMs,
+                  onChanged: (v) => setState(() => _dragMs = v),
+                  onChangeEnd: (v) async {
+                    await ref
+                        .read(playbackControllerProvider.notifier)
+                        .seek(Duration(milliseconds: v.toInt()));
+                    if (mounted) setState(() => _dragMs = null);
+                  },
+                ),
+              ),
             ),
-            child: Slider(
-              min: 0,
-              max: maxMs.toDouble(),
-              value: pos.inMilliseconds.clamp(0, maxMs).toDouble(),
-              onChanged: (v) => ref
-                  .read(playbackControllerProvider.notifier)
-                  .seek(Duration(milliseconds: v.toInt())),
+            Positioned(
+              left: 8,
+              right: 8,
+              top: _labelsTop,
+              child: IgnorePointer(
+                child: Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                  children: [
+                    Text(_format(shown),
+                        style: Theme.of(context).textTheme.bodySmall),
+                    Text(_format(dur),
+                        style: Theme.of(context).textTheme.bodySmall),
+                  ],
+                ),
+              ),
             ),
-          ),
-          Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 8),
-            child: Row(
-              mainAxisAlignment: MainAxisAlignment.spaceBetween,
-              children: [
-                Text(_format(pos), style: Theme.of(context).textTheme.bodySmall),
-                Text(_format(dur), style: Theme.of(context).textTheme.bodySmall),
-              ],
-            ),
-          ),
-        ],
+          ],
+        ),
       ),
     );
   }
@@ -531,6 +566,17 @@ class _MoreSheet extends ConsumerWidget {
                 MaterialPageRoute(builder: (_) => LyricsScreen(track: t)),
               );
             }),
+            _MoreRow(
+              'Sleep timer',
+              value: _sleepValue(context, ref, ctrl),
+              onTap: () {
+                Navigator.pop(context);
+                showModalBottomSheet(
+                  context: context,
+                  builder: (_) => const SleepTimerSheet(),
+                );
+              },
+            ),
             _MoreRow('Speed and pitch', onTap: () {
               Navigator.pop(context);
               showModalBottomSheet(
@@ -556,6 +602,15 @@ class _MoreSheet extends ConsumerWidget {
       ),
     );
   }
+}
+
+String _sleepValue(
+    BuildContext context, WidgetRef ref, PlaybackController ctrl) {
+  final until = ref.watch(sleepTimerProvider);
+  if (until != null) return TimeOfDay.fromDateTime(until).format(context);
+  if (ctrl.stopAfterCurrent) return 'End of song';
+  if (ctrl.stopAfterAlbum) return 'End of album';
+  return 'Off';
 }
 
 class _MoreRow extends StatelessWidget {
@@ -597,7 +652,7 @@ class _RatingRow extends ConsumerWidget {
   Widget build(BuildContext context, WidgetRef ref) {
     final on = Theme.of(context).colorScheme.onSurface;
     return Padding(
-      padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 8),
+      padding: const EdgeInsets.fromLTRB(24, 4, 20, 4),
       child: Row(
         children: [
           Expanded(
@@ -606,8 +661,11 @@ class _RatingRow extends ConsumerWidget {
           ...List.generate(5, (i) {
             final filled = i < track.rating;
             return IconButton(
-              padding: const EdgeInsets.symmetric(horizontal: 2),
-              constraints: const BoxConstraints(),
+              padding: EdgeInsets.zero,
+              // Standard density: the app's compact density would shrink
+              // these to 40.
+              visualDensity: VisualDensity.standard,
+              constraints: const BoxConstraints(minWidth: 48, minHeight: 48),
               icon: Icon(filled ? Icons.star : Icons.star_border,
                   size: 22, color: on),
               onPressed: () async {

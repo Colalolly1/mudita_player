@@ -1,9 +1,13 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import 'core/constants/app_constants.dart';
 import 'core/router/app_router.dart';
 import 'core/theme/theme_controller.dart';
+import 'data/repositories/library_repository.dart';
+import 'data/scanner/library_initializer.dart';
 import 'playback/media_session_bridge.dart';
 import 'playback/playback_controller.dart';
 
@@ -15,12 +19,27 @@ class MuditaApp extends ConsumerStatefulWidget {
 }
 
 class _MuditaAppState extends ConsumerState<MuditaApp> {
+  final _messengerKey = GlobalKey<ScaffoldMessengerState>();
+  StreamSubscription<String>? _writeErrorSub;
+
   @override
   void initState() {
     super.initState();
     // After first frame, attempt to restore the last session so the user
     // picks up roughly where they left off after a crash or relaunch.
     WidgetsBinding.instance.addPostFrameCallback((_) async {
+      // Tag and cover writes that failed, shown wherever the user is.
+      try {
+        _writeErrorSub =
+            ref.read(libraryRepositoryProvider).writeErrors.listen((message) {
+          _messengerKey.currentState?.showSnackBar(
+            SnackBar(
+              content: Text(message),
+              duration: const Duration(seconds: 6),
+            ),
+          );
+        });
+      } catch (_) {}
       MediaSessionBridge? bridge;
       try {
         // Eagerly construct the media-session bridge so the OS sees us as
@@ -31,6 +50,14 @@ class _MuditaAppState extends ConsumerState<MuditaApp> {
         await ref
             .read(playbackControllerProvider.notifier)
             .restoreLastSession();
+      } catch (_) {}
+      // Pick up songs added, changed or removed since last time. Not awaited:
+      // the battery prompt below shouldn't wait for the scan.
+      try {
+        unawaited(ref
+            .read(libraryInitializerProvider)
+            .refreshOnLaunch()
+            .catchError((_) {}));
       } catch (_) {}
       // First-launch only: ask Mudita to stop killing us in the background,
       // so volume keys keep controlling music when the screen is off / we're
@@ -50,6 +77,12 @@ class _MuditaAppState extends ConsumerState<MuditaApp> {
   }
 
   @override
+  void dispose() {
+    _writeErrorSub?.cancel();
+    super.dispose();
+  }
+
+  @override
   Widget build(BuildContext context) {
     final theme = ref.watch(themeControllerProvider);
     final router = ref.watch(routerProvider);
@@ -57,6 +90,7 @@ class _MuditaAppState extends ConsumerState<MuditaApp> {
     return MaterialApp.router(
       title: 'Mudita Player',
       debugShowCheckedModeBanner: false,
+      scaffoldMessengerKey: _messengerKey,
       theme: lightThemeFor(theme),
       darkTheme: darkThemeFor(theme),
       themeMode: theme.materialMode,

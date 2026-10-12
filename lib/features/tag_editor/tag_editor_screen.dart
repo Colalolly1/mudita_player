@@ -144,7 +144,7 @@ class _TagEditorScreenState extends ConsumerState<TagEditorScreen> {
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
           content: Text(
-            'Updated $updated track${updated == 1 ? '' : 's'}${failed > 0 ? ', $failed failed' : ''}',
+            'Updated $updated track${updated == 1 ? '' : 's'}${failed > 0 ? ", $failed couldn't be written. Allow all files access in Settings." : ''}',
           ),
         ),
       );
