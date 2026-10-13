@@ -87,6 +87,21 @@ class LibrarySummary {
   });
 }
 
+/// What makes two rows the same song, for dedupe and for the scanner.
+/// Null for rows with no artist and no album: their title is often just the
+/// file name ("01", "Track 1"), so different songs looked equal.
+String? sameSongKey(
+  String title,
+  String artist,
+  String album,
+  int trackNumber,
+) {
+  final a = artist.trim().toLowerCase();
+  final b = album.trim().toLowerCase();
+  if (a.isEmpty && b.isEmpty) return null;
+  return '${title.trim().toLowerCase()}\u0000$a\u0000$b\u0000$trackNumber';
+}
+
 @DriftDatabase(tables: [Tracks, Playlists, PlaylistTracks, MusicFolders])
 class AppDatabase extends _$AppDatabase {
   AppDatabase() : super(_openConnection());
@@ -359,33 +374,30 @@ class AppDatabase extends _$AppDatabase {
   }
 
   /// Removes duplicate tracks. Two tracks are "the same" if they share
-  /// title + artist + album + track number. Keeps the row with the smallest
-  /// id, which preserves favorites/ratings/play counts on the canonical row.
+  /// title + artist + album + track number ([sameSongKey]) and their
+  /// durations are within a second. Keeps the row with the smallest id,
+  /// which preserves favorites/ratings/play counts on the canonical row.
   ///
-  /// Rows with no artist and no album are left out: their title is often
-  /// just the file name ("01", "Track 1"), so different songs looked equal.
+  /// The scanner uses the same test to leave such copies out, so a copy
+  /// isn't added and removed again on every scan.
   Future<int> dedupeTracks() async {
-    final result = await customUpdate(
-      '''
-      DELETE FROM tracks
-      WHERE (TRIM(artist) != '' OR TRIM(album) != '')
-        AND id NOT IN (
-          SELECT MIN(id)
-          FROM tracks
-          WHERE TRIM(artist) != '' OR TRIM(album) != ''
-          GROUP BY
-            LOWER(TRIM(title)),
-            LOWER(TRIM(artist)),
-            LOWER(TRIM(album)),
-            track_number
-        )
-      ''',
-    );
-    // Only wake the library lists when something was actually removed.
-    if (result > 0) {
-      notifyUpdates({TableUpdate.onTable(tracks, kind: UpdateKind.delete)});
+    final rows =
+        await (select(tracks)..orderBy([(t) => OrderingTerm.asc(t.id)])).get();
+    final kept = <String, List<int>>{};
+    final drop = <int>[];
+    for (final t in rows) {
+      final key = sameSongKey(t.title, t.artist, t.album, t.trackNumber);
+      if (key == null) continue;
+      final durations = kept.putIfAbsent(key, () => []);
+      if (durations.any((ms) => (ms - t.durationMs).abs() <= 1000)) {
+        drop.add(t.id);
+      } else {
+        durations.add(t.durationMs);
+      }
     }
-    return result;
+    // Only wakes the library lists when something is actually removed.
+    await deleteTracksByIds(drop);
+    return drop.length;
   }
 
   Future<void> wipeAllTracks() async {

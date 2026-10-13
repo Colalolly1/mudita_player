@@ -835,12 +835,31 @@ final playbackControllerProvider =
 });
 
 /// Playback position, once a second while playing and on every seek. Only
-/// the widgets that show the position should watch this.
-final positionStreamProvider = StreamProvider<Duration>((ref) {
-  final p = ref.watch(playbackControllerProvider.notifier);
-  return p.player.createPositionStream(
-    steps: 1,
-    minPeriod: const Duration(seconds: 1),
-    maxPeriod: const Duration(seconds: 1),
-  );
+/// the widgets that show the position should watch this. It stops when no
+/// screen shows it, and its timer runs only while playing. (just_audio's
+/// createPositionStream keeps its timer running until the player is
+/// disposed, even with nobody listening.)
+final positionStreamProvider = StreamProvider.autoDispose<Duration>((ref) {
+  final player = ref.watch(playbackControllerProvider.notifier).player;
+  final controller = StreamController<Duration>();
+  Timer? timer;
+  final playingSub = player.playingStream.listen((playing) {
+    timer?.cancel();
+    timer = playing
+        ? Timer.periodic(
+            const Duration(seconds: 1),
+            (_) => controller.add(player.position),
+          )
+        : null;
+  });
+  final eventSub =
+      player.playbackEventStream.listen((_) => controller.add(player.position));
+  ref.onDispose(() {
+    timer?.cancel();
+    playingSub.cancel();
+    eventSub.cancel();
+    controller.close();
+  });
+  controller.add(player.position);
+  return controller.stream.distinct();
 });

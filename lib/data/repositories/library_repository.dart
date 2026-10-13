@@ -321,21 +321,40 @@ class LibraryRepository {
     await file.writeAsString(lines.join('\n'));
   }
 
-  Future<void> rescan() async {
+  /// Scans every music folder, then prunes and dedupes. A row is only
+  /// pruned if it sits under a folder that was listed in this scan, so an
+  /// unmounted SD card or renamed folder doesn't delete its songs (and their
+  /// playlists, favourites, ratings and play counts). At launch, nothing is
+  /// pruned at all if any folder couldn't be listed.
+  Future<void> rescan({bool atLaunch = false}) async {
     final folders = await db.getMusicFolders();
+    final roots = <String>[];
+    final inserted = <String>{};
+    var allListed = true;
     for (final f in folders) {
-      await scanner.scanFolder(f.uri, db);
+      final scan = await scanner.scanFolder(f.uri, db);
+      roots.addAll(scan.listedRoots);
+      inserted.addAll(scan.inserted);
+      if (!scan.listed) allListed = false;
     }
-    await _pruneThenDedupe();
+    await _pruneThenDedupe(
+      roots: atLaunch && !allListed ? const [] : roots,
+      inserted: inserted,
+    );
   }
 
   /// Drop rows whose file is gone, then dedupe. The order matters: after a
   /// folder moves, its old rows (lower ids) are still there, so deduping
   /// first kept the old rows and deleted the new ones, and the prune then
   /// removed the old ones too, losing the songs from the library.
-  Future<void> _pruneThenDedupe() async {
+  Future<void> _pruneThenDedupe({
+    required List<String> roots,
+    required Set<String> inserted,
+  }) async {
     try {
-      await pruneMissingFiles();
+      if (roots.isNotEmpty) {
+        await pruneMissingFiles(roots: roots, inserted: inserted);
+      }
     } catch (_) {}
     // Dedupe so users never see two rows for the same song, whether the
     // cause is symlinks, duplicate files on disk, or rows from older builds.
@@ -347,24 +366,80 @@ class LibraryRepository {
   /// Remove library rows whose audio file no longer exists on disk.
   /// Returns how many were removed. content:// rows can't be checked and
   /// are left alone.
-  Future<int> pruneMissingFiles() async {
+  ///
+  /// With [roots], only rows under those folders are checked. A missing row
+  /// whose file was moved, found as a row in [inserted] with the same size
+  /// and tags, keeps its id and takes the new path; the new row goes.
+  Future<int> pruneMissingFiles({
+    List<String>? roots,
+    Set<String> inserted = const {},
+  }) async {
     final all = await db.allTracks();
-    final gone = <int>[];
+    final gone = <Track>[];
     var checked = 0;
     for (final t in all) {
       final uri = t.uri;
       if (uri.startsWith('content://')) continue;
       final path = uri.startsWith('file://') ? uri.substring(7) : uri;
+      if (roots != null && !roots.any((r) => p.isWithin(r, path))) continue;
       checked++;
       try {
-        if (!await File(path).exists()) gone.add(t.id);
+        if (!await File(path).exists()) gone.add(t);
       } catch (_) {}
     }
     // Every file missing means storage or permission trouble, not a deleted
     // library. Keep the rows (and their plays and playlists).
     if (checked > 0 && gone.length == checked) return 0;
-    await db.deleteTracksByIds(gone);
-    return gone.length;
+
+    final fresh = all.where((t) => inserted.contains(t.uri)).toList();
+    final removed = <int>[];
+    for (final old in gone) {
+      final i = fresh.indexWhere((n) =>
+          n.fileSize == old.fileSize &&
+          n.title == old.title &&
+          n.artist == old.artist &&
+          n.album == old.album &&
+          n.trackNumber == old.trackNumber);
+      if (i < 0) {
+        removed.add(old.id);
+        continue;
+      }
+      final moved = fresh.removeAt(i);
+      await _carryOver(old, moved);
+    }
+    await db.deleteTracksByIds(removed);
+    return removed.length;
+  }
+
+  /// Point [old] at the file [moved] found, and drop [moved]'s row, so the
+  /// song keeps its id and with it its playlists, favourites, ratings and
+  /// play counts.
+  Future<void> _carryOver(Track old, Track moved) async {
+    // A folder cover left behind in the old folder is gone; take the new one.
+    var artGone = old.artUri.isEmpty;
+    if (!artGone) {
+      final art = old.artUri.startsWith('file://')
+          ? old.artUri.substring(7)
+          : old.artUri;
+      try {
+        artGone = !await File(art).exists();
+      } catch (_) {}
+    }
+    await db.transaction(() async {
+      // uri is unique, so the new row has to go before the old one takes it.
+      await db.deleteTracksByIds([moved.id]);
+      await (db.update(db.tracks)..where((t) => t.id.equals(old.id))).write(
+        TracksCompanion(
+          uri: Value(moved.uri),
+          filename: Value(moved.filename),
+          folderUri: Value(moved.folderUri),
+          folderPath: Value(moved.folderPath),
+          // Matches the file, so the next scan doesn't reread it.
+          dateModified: Value(moved.dateModified),
+          artUri: artGone ? Value(moved.artUri) : const Value.absent(),
+        ),
+      );
+    });
   }
 
   Future<void> removeTrackFromPlaylist(int playlistId, int trackId) =>
@@ -425,8 +500,8 @@ class LibraryRepository {
 
   Future<void> addMusicFolder(String uri, String displayName) async {
     await db.addMusicFolder(uri, displayName);
-    await scanner.scanFolder(uri, db);
-    await _pruneThenDedupe();
+    final scan = await scanner.scanFolder(uri, db);
+    await _pruneThenDedupe(roots: scan.listedRoots, inserted: scan.inserted);
   }
 
   Future<void> removeMusicFolder(String uri) => db.removeMusicFolder(uri);

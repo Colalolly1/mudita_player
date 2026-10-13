@@ -16,6 +16,7 @@ import io.flutter.embedding.engine.FlutterEngine
 import io.flutter.embedding.engine.FlutterEngineCache
 import io.flutter.plugin.common.EventChannel
 import io.flutter.plugin.common.MethodChannel
+import java.lang.ref.WeakReference
 
 /**
  * Hardware-key gesture detection.
@@ -28,19 +29,108 @@ import io.flutter.plugin.common.MethodChannel
 class MainActivity : FlutterActivity() {
     companion object {
         private const val ENGINE_ID = "main"
+        private const val MEDIA_CONTROL_CHANNEL = "com.muditakompakt.mudita_player/media_control"
+        private const val MEDIA_EVENT_CHANNEL = "com.muditakompakt.mudita_player/media_events"
 
         // Kept outside the activity: with the cached engine, Dart only sends
         // this once, but the activity can be recreated many times.
         @Volatile
         private var enabled = true
+
+        // The activity on screen, if any. Only the battery prompt needs one.
+        @Volatile
+        private var liveActivity: WeakReference<MainActivity>? = null
+
+        // The media channels live as long as the cached engine, so they are
+        // set up once, here, with the application context. Handlers set from
+        // the activity kept every closed activity in memory.
+        private fun registerMediaChannels(engine: FlutterEngine, app: Context) {
+            try {
+                // Dart -> Kotlin: push playback state to the system MediaSession.
+                MethodChannel(
+                    engine.dartExecutor.binaryMessenger,
+                    MEDIA_CONTROL_CHANNEL,
+                ).setMethodCallHandler { call, result ->
+                    try {
+                        when (call.method) {
+                            "start" -> {
+                                app.startService(Intent(app, MediaPlaybackService::class.java))
+                                result.success(null)
+                            }
+                            "stop" -> {
+                                MediaPlaybackService.instance?.stopAndRelease()
+                                app.stopService(Intent(app, MediaPlaybackService::class.java))
+                                result.success(null)
+                            }
+                            "setMetadata" -> {
+                                val args = call.arguments as Map<*, *>
+                                MediaPlaybackService.instance?.updateMetadata(
+                                    title = args["title"] as? String ?: "",
+                                    artist = args["artist"] as? String,
+                                    album = args["album"] as? String,
+                                    durationMs = (args["durationMs"] as? Number)?.toLong() ?: 0L,
+                                    artPath = args["artPath"] as? String,
+                                )
+                                result.success(null)
+                            }
+                            "setPlaybackState" -> {
+                                val args = call.arguments as Map<*, *>
+                                MediaPlaybackService.instance?.updatePlaybackState(
+                                    playing = args["playing"] as? Boolean ?: false,
+                                    positionMs = (args["positionMs"] as? Number)?.toLong() ?: 0L,
+                                )
+                                result.success(null)
+                            }
+                            "isBatteryExempt" -> {
+                                result.success(isIgnoringBatteryOptimizations(app))
+                            }
+                            "requestBatteryExemption" -> {
+                                // With no activity on screen there is nothing to
+                                // show the prompt from; just report the state.
+                                liveActivity?.get()?.requestBatteryExemption()
+                                result.success(isIgnoringBatteryOptimizations(app))
+                            }
+                            else -> result.notImplemented()
+                        }
+                    } catch (t: Throwable) {
+                        result.error("err", t.message, null)
+                    }
+                }
+
+                // Kotlin -> Dart: button presses from the lock screen, car and
+                // headphones.
+                EventChannel(
+                    engine.dartExecutor.binaryMessenger,
+                    MEDIA_EVENT_CHANNEL,
+                ).setStreamHandler(object : EventChannel.StreamHandler {
+                    override fun onListen(arguments: Any?, events: EventChannel.EventSink?) {
+                        MediaPlaybackService.eventSink = events
+                    }
+                    override fun onCancel(arguments: Any?) {
+                        MediaPlaybackService.eventSink = null
+                    }
+                })
+            } catch (_: Throwable) {
+                // Don't let channel setup crash the app.
+            }
+        }
+
+        private fun isIgnoringBatteryOptimizations(context: Context): Boolean {
+            return try {
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+                    val pm = context.getSystemService(Context.POWER_SERVICE) as PowerManager
+                    pm.isIgnoringBatteryOptimizations(context.packageName)
+                } else {
+                    true
+                }
+            } catch (_: Throwable) {
+                false
+            }
+        }
     }
 
     private val channelName = "com.muditakompakt.mudita_player/hwkeys"
-    private val mediaControlChannelName = "com.muditakompakt.mudita_player/media_control"
-    private val mediaEventChannelName = "com.muditakompakt.mudita_player/media_events"
     private var channel: MethodChannel? = null
-    private var mediaControlChannel: MethodChannel? = null
-    private var mediaEventChannel: EventChannel? = null
 
     private val mainHandler = Handler(Looper.getMainLooper())
 
@@ -58,7 +148,9 @@ class MainActivity : FlutterActivity() {
     override fun provideFlutterEngine(context: Context): FlutterEngine? {
         val cache = FlutterEngineCache.getInstance()
         cache.get(ENGINE_ID)?.let { return it }
-        val engine = FlutterEngine(context.applicationContext)
+        val app = context.applicationContext
+        val engine = FlutterEngine(app)
+        registerMediaChannels(engine, app)
         cache.put(ENGINE_ID, engine)
         return engine
     }
@@ -71,6 +163,7 @@ class MainActivity : FlutterActivity() {
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
+        liveActivity = WeakReference(this)
         super.onCreate(savedInstanceState)
         // Route volume buttons to the media stream so they always change
         // music volume, not ringtone or notification volume.
@@ -78,6 +171,11 @@ class MainActivity : FlutterActivity() {
             volumeControlStream = AudioManager.STREAM_MUSIC
         } catch (_: Throwable) {
         }
+    }
+
+    override fun onDestroy() {
+        if (liveActivity?.get() === this) liveActivity = null
+        super.onDestroy()
     }
 
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
@@ -93,100 +191,15 @@ class MainActivity : FlutterActivity() {
                     else -> result.notImplemented()
                 }
             }
-
-            // Media control channel — Dart -> Kotlin: push playback state to
-            // the system MediaSession.
-            mediaControlChannel = MethodChannel(
-                flutterEngine.dartExecutor.binaryMessenger,
-                mediaControlChannelName,
-            )
-            mediaControlChannel?.setMethodCallHandler { call, result ->
-                try {
-                    when (call.method) {
-                        // The application context: with the cached engine
-                        // this handler can outlive the activity that set it.
-                        "start" -> {
-                            applicationContext.startService(
-                                Intent(applicationContext, MediaPlaybackService::class.java),
-                            )
-                            result.success(null)
-                        }
-                        "stop" -> {
-                            MediaPlaybackService.instance?.stopAndRelease()
-                            applicationContext.stopService(
-                                Intent(applicationContext, MediaPlaybackService::class.java),
-                            )
-                            result.success(null)
-                        }
-                        "setMetadata" -> {
-                            val args = call.arguments as Map<*, *>
-                            MediaPlaybackService.instance?.updateMetadata(
-                                title = args["title"] as? String ?: "",
-                                artist = args["artist"] as? String,
-                                album = args["album"] as? String,
-                                durationMs = (args["durationMs"] as? Number)?.toLong() ?: 0L,
-                                artPath = args["artPath"] as? String,
-                            )
-                            result.success(null)
-                        }
-                        "setPlaybackState" -> {
-                            val args = call.arguments as Map<*, *>
-                            MediaPlaybackService.instance?.updatePlaybackState(
-                                playing = args["playing"] as? Boolean ?: false,
-                                positionMs = (args["positionMs"] as? Number)?.toLong() ?: 0L,
-                            )
-                            result.success(null)
-                        }
-                        "isBatteryExempt" -> {
-                            result.success(isIgnoringBatteryOptimizations())
-                        }
-                        "requestBatteryExemption" -> {
-                            requestBatteryExemption()
-                            result.success(isIgnoringBatteryOptimizations())
-                        }
-                        else -> result.notImplemented()
-                    }
-                } catch (t: Throwable) {
-                    result.error("err", t.message, null)
-                }
-            }
-
-            // Media event channel — Kotlin -> Dart: deliver button presses
-            // from the lock screen / car / headphones.
-            mediaEventChannel = EventChannel(
-                flutterEngine.dartExecutor.binaryMessenger,
-                mediaEventChannelName,
-            )
-            mediaEventChannel?.setStreamHandler(object : EventChannel.StreamHandler {
-                override fun onListen(arguments: Any?, events: EventChannel.EventSink?) {
-                    MediaPlaybackService.eventSink = events
-                }
-                override fun onCancel(arguments: Any?) {
-                    MediaPlaybackService.eventSink = null
-                }
-            })
         } catch (t: Throwable) {
             // Don't let channel setup crash the activity.
-        }
-    }
-
-    private fun isIgnoringBatteryOptimizations(): Boolean {
-        return try {
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
-                val pm = getSystemService(POWER_SERVICE) as PowerManager
-                pm.isIgnoringBatteryOptimizations(packageName)
-            } else {
-                true
-            }
-        } catch (_: Throwable) {
-            false
         }
     }
 
     private fun requestBatteryExemption() {
         try {
             if (Build.VERSION.SDK_INT < Build.VERSION_CODES.M) return
-            if (isIgnoringBatteryOptimizations()) return
+            if (isIgnoringBatteryOptimizations(this)) return
             val intent = Intent(
                 Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS,
                 Uri.parse("package:$packageName"),

@@ -39,7 +39,9 @@ class LibraryInitializer {
       if (!audio && !storage) return;
     }
     if ((await repo.getMusicFolders()).isEmpty) return;
-    await repo.rescan();
+    // If any folder can't be listed (SD card not mounted, folder renamed),
+    // nothing is pruned, so its songs and their history stay.
+    await repo.rescan(atLaunch: true);
   }
 
   Future<void> _run() async {

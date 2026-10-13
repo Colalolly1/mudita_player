@@ -9,6 +9,30 @@ import 'package:path_provider/path_provider.dart';
 import '../database/app_database.dart';
 import '../art_loader/art_loader.dart';
 
+/// What one folder scan found.
+class FolderScan {
+  /// Audio files found and kept in the library.
+  final int count;
+
+  /// The canonical folders that were listed to the end. Rows anywhere else
+  /// were not checked by this scan, so a prune has to leave them alone.
+  final List<String> listedRoots;
+
+  /// False if the folder, or any of its roots, couldn't be listed: not
+  /// there (SD card not mounted, folder renamed) or the listing failed.
+  final bool listed;
+
+  /// Paths added to the library by this scan, for spotting moved files.
+  final Set<String> inserted;
+
+  const FolderScan({
+    required this.count,
+    required this.listedRoots,
+    required this.listed,
+    required this.inserted,
+  });
+}
+
 /// Pure-Dart filesystem scanner. Walks a folder recursively, reads tags via
 /// the `audiotags` package (no native MediaStore plugin needed).
 class LibraryScanner {
@@ -27,7 +51,7 @@ class LibraryScanner {
     '.wma',
   };
 
-  Future<int> scanFolder(String folderUri, AppDatabase db) async {
+  Future<FolderScan> scanFolder(String folderUri, AppDatabase db) async {
     // Pre-scan cleanup: drop any rows pointing into /sdcard/ (a symlink to
     // /storage/emulated/0/) so we never end up with two paths for one file.
     try {
@@ -47,19 +71,31 @@ class LibraryScanner {
         '/sdcard/Music',
         '/sdcard/Download',
       ];
-      int total = 0;
+      final result = _ScanProgress();
+      var anyExisted = false;
+      var allListed = true;
       for (final d in defaults) {
         final dir = Directory(d);
-        if (await dir.exists()) {
-          total += await _scanFilesystem(dir, db);
-        }
+        if (!await _exists(dir)) continue;
+        anyExisted = true;
+        if (!await _scanFilesystem(dir, db, result)) allListed = false;
       }
-      return total;
+      return result.done(listed: anyExisted && allListed);
     }
 
+    final result = _ScanProgress();
     final dir = Directory(path);
-    if (!await dir.exists()) return 0;
-    return _scanFilesystem(dir, db);
+    if (!await _exists(dir)) return result.done(listed: false);
+    final listed = await _scanFilesystem(dir, db, result);
+    return result.done(listed: listed);
+  }
+
+  Future<bool> _exists(Directory dir) async {
+    try {
+      return await dir.exists();
+    } catch (_) {
+      return false;
+    }
   }
 
   /// Resolve `/sdcard/...` to `/storage/emulated/0/...` so every file has one
@@ -72,17 +108,45 @@ class LibraryScanner {
     return path;
   }
 
-  Future<int> _scanFilesystem(Directory dir, AppDatabase db) async {
+  /// Scans [dir] into the library. Returns true only if the whole folder
+  /// was listed; a listing error stops the walk and returns false.
+  Future<bool> _scanFilesystem(
+    Directory dir,
+    AppDatabase db,
+    _ScanProgress result,
+  ) async {
+    try {
+      await _walk(dir, db, result);
+      result.listedRoots.add(p.normalize(_canonicalize(dir.path)));
+      return true;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  Future<void> _walk(
+    Directory dir,
+    AppDatabase db,
+    _ScanProgress result,
+  ) async {
     final cacheDir = await getApplicationDocumentsDirectory();
     final artDir = Directory(p.join(cacheDir.path, 'art'));
     if (!await artDir.exists()) await artDir.create(recursive: true);
 
     // What the library already has, by path, so files that haven't changed
     // since the last scan can be skipped without opening them.
-    final known = {for (final t in await db.allTracks()) t.uri: t};
+    final all = await db.allTracks();
+    final known = {for (final t in all) t.uri: t};
+    // And by song, so a second copy of a song already in the library isn't
+    // added only for dedupe to remove it again on every scan.
+    final bySong = <String, List<(String, int)>>{};
+    for (final t in all) {
+      final key = sameSongKey(t.title, t.artist, t.album, t.trackNumber);
+      if (key == null) continue;
+      bySong.putIfAbsent(key, () => []).add((t.uri, t.durationMs));
+    }
     final folderCovers = <String, String?>{};
 
-    int count = 0;
     final stream = dir.list(recursive: true, followLinks: false);
     await for (final entity in stream) {
       try {
@@ -112,7 +176,7 @@ class LibraryScanner {
             final cover = folderCovers[folder];
             if (cover != null) await db.setTrackArt(old.id, cover);
           }
-          count++;
+          result.count++;
           continue;
         }
 
@@ -123,8 +187,32 @@ class LibraryScanner {
         // A known file that can't be read right now keeps its row as it is,
         // rather than having its title and artist blanked.
         if (old != null && tag == null) {
-          count++;
+          result.count++;
           continue;
+        }
+
+        final title = (tag?.title?.isNotEmpty ?? false)
+            ? tag!.title!
+            : p.basenameWithoutExtension(entity.path);
+        final artist = tag?.trackArtist ?? '';
+        final album = tag?.album ?? '';
+        final trackNumber = tag?.trackNumber ?? 0;
+        final durationMs = (tag?.duration ?? 0) * 1000;
+        final songKey = sameSongKey(title, artist, album, trackNumber);
+        if (old == null && songKey != null) {
+          // A copy of a song the library already has, at another path that
+          // still exists: leave it out. (If the other file is gone, this is
+          // a move; it goes in, and the prune carries the old row over.)
+          var copy = false;
+          final same = bySong[songKey] ?? const <(String, int)>[];
+          for (final (uri, ms) in same) {
+            if ((ms - durationMs).abs() > 1000) continue;
+            if (await _fileExists(uri)) {
+              copy = true;
+              break;
+            }
+          }
+          if (copy) continue;
         }
 
         // A known row keeps the art it has, including a cover picked in the
@@ -144,17 +232,15 @@ class LibraryScanner {
           filename: p.basename(canon),
           folderUri: p.dirname(canon),
           folderPath: p.dirname(canon),
-          title: (tag?.title?.isNotEmpty ?? false)
-              ? tag!.title!
-              : p.basenameWithoutExtension(entity.path),
-          artist: Value(tag?.trackArtist ?? ''),
+          title: title,
+          artist: Value(artist),
           albumArtist: Value(tag?.albumArtist ?? ''),
-          album: Value(tag?.album ?? ''),
+          album: Value(album),
           genre: Value(tag?.genre ?? ''),
           year: Value(tag?.year ?? 0),
-          trackNumber: Value(tag?.trackNumber ?? 0),
+          trackNumber: Value(trackNumber),
           discNumber: Value(tag?.discNumber ?? 0),
-          durationMs: Value(((tag?.duration ?? 0)) * 1000),
+          durationMs: Value(durationMs),
           fileSize: Value(stat?.size ?? 0),
           format: Value(ext.replaceFirst('.', '').toUpperCase()),
           artUri: keepArt ? const Value.absent() : Value(artUri),
@@ -162,14 +248,43 @@ class LibraryScanner {
           dateModified: Value(stat?.modified.millisecondsSinceEpoch ?? 0),
         );
         await db.upsertTrack(companion);
-        count++;
+        if (old == null) {
+          result.inserted.add(canon);
+          if (songKey != null) {
+            bySong.putIfAbsent(songKey, () => []).add((canon, durationMs));
+          }
+        }
+        result.count++;
       } catch (_) {
         // Skip any single-file failure rather than aborting the whole scan.
         continue;
       }
     }
-    return count;
   }
+
+  /// content:// rows can't be checked, so they count as present.
+  Future<bool> _fileExists(String uri) async {
+    if (uri.startsWith('content://')) return true;
+    final path = uri.startsWith('file://') ? uri.substring(7) : uri;
+    try {
+      return await File(path).exists();
+    } catch (_) {
+      return false;
+    }
+  }
+}
+
+class _ScanProgress {
+  int count = 0;
+  final listedRoots = <String>[];
+  final inserted = <String>{};
+
+  FolderScan done({required bool listed}) => FolderScan(
+        count: count,
+        listedRoots: listedRoots,
+        listed: listed,
+        inserted: inserted,
+      );
 }
 
 final libraryScannerProvider = Provider<LibraryScanner>((ref) {

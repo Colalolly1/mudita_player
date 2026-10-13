@@ -2,6 +2,7 @@ import 'dart:async';
 
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:just_audio/just_audio.dart' show PositionDiscontinuityReason;
 
 import 'playback_controller.dart';
 
@@ -19,13 +20,12 @@ class MediaSessionBridge {
   final Ref _ref;
   StreamSubscription? _eventSub;
   ProviderSubscription? _stateSub;
-  ProviderSubscription? _posSub;
+  StreamSubscription? _seekSub;
   bool _serviceStarted = false;
   String _lastTitle = '';
   String? _lastArt;
   int _lastDurationMs = 0;
-  int _lastStatePushMs = 0;
-  int _lastPushedPosMs = 0;
+  bool _statePushed = false;
   bool _lastPlaying = false;
 
   MediaSessionBridge(this._ref);
@@ -39,15 +39,23 @@ class MediaSessionBridge {
       (prev, next) => _push(next),
       fireImmediately: true,
     );
-    // Position is no longer part of PlaybackState, so listen to it here to
-    // catch seeks.
-    _posSub = _ref.listen<AsyncValue<Duration>>(
-      positionStreamProvider,
-      (prev, next) => _push(_ref.read(playbackControllerProvider)),
-    );
+    // Position is not part of PlaybackState. The player reports seeks, and
+    // a repeat-one song starting over, as discontinuities; a new song is
+    // caught by the metadata change instead.
+    _seekSub = _ref
+        .read(playbackControllerProvider.notifier)
+        .player
+        .positionDiscontinuityStream
+        .listen((d) {
+      final looped = d.reason == PositionDiscontinuityReason.autoAdvance &&
+          d.previousEvent.currentIndex == d.event.currentIndex;
+      if (d.reason == PositionDiscontinuityReason.seek || looped) {
+        _push(_ref.read(playbackControllerProvider), seeked: true);
+      }
+    });
   }
 
-  Future<void> _push(PlaybackState next) async {
+  Future<void> _push(PlaybackState next, {bool seeked = false}) async {
     final cur = next.current;
     if (cur == null) {
       if (_serviceStarted) {
@@ -101,19 +109,14 @@ class MediaSessionBridge {
     // changed: play/pause, a new track, or a seek. Pushing every second
     // re-posted the media notification every second, and every notification
     // listener on the phone (Bigme's standby app among them) woke for it.
-    final nowMs = DateTime.now().millisecondsSinceEpoch;
     final playStateChanged = next.playing != _lastPlaying;
     final posMs = _ref
         .read(playbackControllerProvider.notifier)
         .player
         .position
         .inMilliseconds;
-    final expectedMs = _lastPushedPosMs +
-        (_lastPlaying ? nowMs - _lastStatePushMs : 0);
-    final seeked = (posMs - expectedMs).abs() > 1500;
-    if (playStateChanged || metaChanged || seeked || _lastStatePushMs == 0) {
-      _lastStatePushMs = nowMs;
-      _lastPushedPosMs = posMs;
+    if (playStateChanged || metaChanged || seeked || !_statePushed) {
+      _statePushed = true;
       _lastPlaying = next.playing;
       try {
         await _control.invokeMethod('setPlaybackState', {
@@ -172,7 +175,7 @@ class MediaSessionBridge {
   void dispose() {
     _eventSub?.cancel();
     _stateSub?.close();
-    _posSub?.close();
+    _seekSub?.cancel();
     if (_serviceStarted) {
       _control.invokeMethod('stop').catchError((_) => null);
     }
